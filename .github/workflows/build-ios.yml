@@ -62,7 +62,11 @@ jobs:
         run: |
           set -euo pipefail
           cd ios/App
-          set -o pipefail
+
+          # Run the archive explicitly so we can capture its true exit code.
+          # With a pipe to `tee` a live log, PIPESTATUS[0] holds xcodebuild's
+          # result (not tee's), letting us fail exactly on archive errors.
+          set +e
           xcodebuild archive \
             -workspace App.xcworkspace \
             -scheme App \
@@ -74,21 +78,56 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO \
             ENABLE_BITCODE=NO 2>&1 | tee build/xcodebuild.log
+          xcode_status=${PIPESTATUS[0]}
+          set -e
+          echo "xcodebuild archive exit code: $xcode_status"
 
-          mkdir -p build/Payload
-          cp -R build/App.xcarchive/Products/Applications/*.app build/Payload/
-
-          # Sanity-check the .app is a real iOS bundle BEFORE zipping. If the
-          # archive is malformed the zip would silently succeed and we'd hand a
-          # broken IPA to AltStore that it refuses to install.
-          if [ ! -f "build/Payload/App.app/Info.plist" ]; then
-            echo "::error::App bundle missing Info.plist — archive did not contain a valid .app"
-            tail -n 60 build/xcodebuild.log
+          if [ "$xcode_status" -ne 0 ]; then
+            echo "::error::xcodebuild failed with exit code $xcode_status"
             exit 1
           fi
 
+          mkdir -p build/Payload
+
+          # Locate the built .app defensively (archive layout varies across
+          # Xcode/runner versions), instead of relying on a fragile glob.
+          # `|| true` keeps `set -e` from aborting here when the path is absent,
+          # so the friendly error block below can actually run.
+          APP_PATH=$(find build/App.xcarchive/Products/Applications -maxdepth 1 -name '*.app' 2>/dev/null | head -n1 | tr -d '\n') || true
+
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::No .app bundle found inside the archive under Products/Applications."
+            echo "--- Archive tree (Products) ---"
+            find build/App.xcarchive/Products -maxdepth 3 -print 2>/dev/null || true
+            echo "--- Full archive top-level ---"
+            ls -laR build/App.xcarchive 2>/dev/null | head -n 80 || true
+            echo "--- Last 80 lines of xcodebuild.log ---"
+            tail -n 80 build/xcodebuild.log || true
+            exit 1
+          fi
+
+          echo "App bundle located at: $APP_PATH"
+
+          # Sanity-check the .app is a real iOS bundle BEFORE copying/zipping.
+          # Uses $APP_PATH (the actual located bundle) so this stays correct
+          # regardless of the target name the project uses.
+          if [ ! -f "$APP_PATH/Info.plist" ]; then
+            echo "::error::App bundle missing Info.plist — archive did not contain a valid .app"
+            echo "--- Archive tree (Products) ---"
+            find build/App.xcarchive/Products -maxdepth 3 -print 2>/dev/null || true
+            echo "--- Full archive top-level ---"
+            ls -laR build/App.xcarchive 2>/dev/null | head -n 80 || true
+            echo "--- Tail 80 lines of xcodebuild.log ---"
+            tail -n 80 build/xcodebuild.log || true
+            exit 1
+          fi
+
+          echo "App bundle Info.plist present — copying .app into Payload/"
+          cp -R "$APP_PATH" build/Payload/
+
           cd build
           ditto -c -k --sequesterRsrc --keepParent Payload "${{ steps.name.outputs.ipa_name }}.ipa"
+          echo "IPA created: $(ls -la "${{ steps.name.outputs.ipa_name }}.ipa")"
 
       # Upload only when the build produced a real IPA. On failure the summary
       # step below prints a readable reason to fix on the next run.
