@@ -1,1 +1,115 @@
+name: Build iOS IPA
 
+on:
+  workflow_dispatch:
+
+# Prevent overlapping runs: if a previous build is still going, a new
+# trigger (or a re-run of the same branch) cancels the in-progress one.
+# Runners are paid/ephemeral, so this avoids wasteful parallel mac VMs and
+# the confusing case of two runs uploading the same artifact.
+concurrency:
+  group: build-ios-ipa
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/App/Pods
+            ~/.cocoapods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/App/Podfile.lock') }}
+          restore-keys: |
+            pods-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Install CocoaPods
+        run: |
+          sudo gem install cocoapods
+          cd ios/App && pod install
+
+      - name: Sync Capacitor iOS
+        run: npx cap sync ios
+
+      - name: Compute artifact name
+        id: name
+        run: |
+          # Sanitize the branch name so the artifact filename is always a single
+          # path-safe token (branches like 'feature/foo' contain '/', which would
+          # otherwise create a nested path).
+          SAFE_BRANCH=$(echo "${GITHUB_REF_NAME:-$(git rev-parse --short HEAD)}" | tr -c 'A-Za-z0-9' '-' | tail -c 40)
+          echo "ipa_name=BabylonianHeron-${SAFE_BRANCH}-$(date +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: Build unsigned IPA
+        id: build
+        run: |
+          set -euo pipefail
+          cd ios/App
+          set -o pipefail
+          xcodebuild archive \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -archivePath build/App.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            ENABLE_BITCODE=NO 2>&1 | tee build/xcodebuild.log
+
+          mkdir -p build/Payload
+          cp -R build/App.xcarchive/Products/Applications/*.app build/Payload/
+
+          # Sanity-check the .app is a real iOS bundle BEFORE zipping. If the
+          # archive is malformed the zip would silently succeed and we'd hand a
+          # broken IPA to AltStore that it refuses to install.
+          if [ ! -f "build/Payload/App.app/Info.plist" ]; then
+            echo "::error::App bundle missing Info.plist — archive did not contain a valid .app"
+            tail -n 60 build/xcodebuild.log
+            exit 1
+          fi
+
+          cd build
+          ditto -c -k --sequesterRsrc --keepParent Payload "${{ steps.name.outputs.ipa_name }}.ipa"
+
+      # Upload only when the build produced a real IPA. On failure the summary
+      # step below prints a readable reason to fix on the next run.
+      - name: Upload IPA
+        if: ${{ steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.ipa_name }}
+          path: ios/App/build/${{ steps.name.outputs.ipa_name }}.ipa
+
+      - name: Summarize build result
+        if: ${{ always() }}
+        run: |
+          echo "## Result" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "ios/App/build/${{ steps.name.outputs.ipa_name }}.ipa" ]; then
+            SIZE_BYTES=$(wc -c < "ios/App/build/${{ steps.name.outputs.ipa_name }}.ipa")
+            echo "✅ **IPA built** — **${{ steps.name.outputs.ipa_name }}.ipa** ($SIZE_BYTES bytes)" >> "$GITHUB_STEP_SUMMARY"
+            echo 'Download from the **Artifacts** section above, then sideload with **AltStore** (re-signs with your Apple ID; free accounts re-sign every 7 days).' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ **Build failed.** Review the logs above — the most common causes:" >> "$GITHUB_STEP_SUMMARY"
+            echo "- \`pod install\` output errors (CocoaPods)" >> "$GITHUB_STEP_SUMMARY"
+            echo "- \`npm run build\` or \`npx cap sync ios\` errors" >> "$GITHUB_STEP_SUMMARY"
+            echo "- xcodebuild compile errors (check \`xcodebuild.log\`)" >> "$GITHUB_STEP_SUMMARY"
+          fi
