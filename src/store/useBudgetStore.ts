@@ -1091,22 +1091,40 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
   
   // ─── Coach Engine ──────────────────────────────────────────
   const generateCoachInsights = useCallback((monthIndex: number) => {
-    const y = currentYear;
-    if (!y) return;
-    const settings = y.coachSettings || defaultCoachSettings;
-    const newInsights = generateInsights(y, monthIndex, settings);
-    // Merge with existing insights, keep only last 20, avoid duplicates by id
-    const existing = y.coachInsights || [];
-    const merged = [...newInsights, ...existing]
-      .filter((ins, idx, self) => idx === self.findIndex(i => i.id === ins.id))
-      .slice(0, 20);
+    // Entirely stable (empty deps): computes from the latest state inside
+    // setState, and skips no-op writes. The App debounced effect depends on
+    // this callback and [selectedMonth, activeYear]; because this callback
+    // never changes identity, generation cannot loop back into the effect.
     setState(prev => {
-      const y = prev.years[prev.activeYear];
-      if (!y) return prev;
-      const updated = { ...y, coachInsights: merged, modifiedAt: now() };
-      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+      const yr = prev.years[prev.activeYear];
+      if (!yr) return prev;
+      const settings = yr.coachSettings || defaultCoachSettings;
+      const newInsights = generateInsights(yr, monthIndex, settings);
+      // Upsert: fresh insights (deterministic id = rule+scope) replace stale
+      // copies, rules no longer generated are pruned, and an insight the user
+      // already dismissed stays dismissed (never resurrected by regeneration).
+      const existing = yr.coachInsights || [];
+      const dismissedIds = new Set(
+        existing.filter(ins => ins.isDismissed).map(ins => ins.id)
+      );
+      const merged = newInsights.map(ins =>
+        dismissedIds.has(ins.id) ? { ...ins, isDismissed: true } : ins
+      ).slice(0, 20);
+      // Skip the write when nothing changed so we don't create a fresh
+      // `currentYear` reference (which would retrigger generation).
+      const unchanged =
+        existing.length === merged.length &&
+        existing.every((e, i) => e.id === merged[i].id && e.isDismissed === merged[i].isDismissed);
+      if (unchanged) return prev;
+      return {
+        ...prev,
+        years: {
+          ...prev.years,
+          [prev.activeYear]: { ...yr, coachInsights: merged },
+        },
+      };
     });
-  }, [currentYear]);
+  }, []);
 
   const dismissCoachInsight = useCallback((insightId: string) => {
     setState(prev => {
