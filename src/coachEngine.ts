@@ -130,7 +130,7 @@ export function generateInsights(
     const threshold = settings.thresholds.capWarning * 100;
     if (pct >= threshold) {
       insights.push({
-        id: `cap-${Date.now()}-${Math.random()}`,
+        id: `cap-${monthIndex}`,
         type: pct >= 90 ? 'alert' : 'warning',
         category: 'household',
         title: pct >= 90 ? '⚠️ Critical Budget Usage' : '📈 Budget Approaching Cap',
@@ -153,7 +153,7 @@ export function generateInsights(
       const factor = settings.thresholds.spikeFactor;
       if (avg > 0 && currentVal > avg * factor) {
         insights.push({
-          id: `spike-${exp.id}-${Date.now()}-${Math.random()}`,
+          id: `spike-${exp.id}-${monthIndex}`,
           type: 'warning',
           category: 'household',
           title: `💰 Spike in ${exp.name}`,
@@ -172,7 +172,7 @@ export function generateInsights(
     yearData.householdExpenses.forEach(exp => {
       if (exp.recurring && exp.recurring !== 'none' && (exp.values[monthIndex] || 0) === 0) {
         insights.push({
-          id: `recurring-${exp.id}-${Date.now()}-${Math.random()}`,
+          id: `recurring-${exp.id}-${monthIndex}`,
           type: 'reminder',
           category: 'household',
           title: `📅 ${exp.name} is due`,
@@ -191,7 +191,7 @@ export function generateInsights(
     const target = Math.round(income * 0.10);
     if (savings < target && income > 0) {
       insights.push({
-        id: `savings-${Date.now()}-${Math.random()}`,
+        id: `savings-${monthIndex}`,
         type: 'suggestion',
         category: 'savings',
         title: '📉 Boost Your Savings',
@@ -210,7 +210,7 @@ export function generateInsights(
     const totalEmi = yearData.debtRepayment.reduce((sum, e) => sum + (e.values[monthIndex] || 0), 0);
     if (debtBalance > 0 && totalEmi > 0 && debtBalance > 3 * totalEmi) {
       insights.push({
-        id: `debt-${Date.now()}-${Math.random()}`,
+        id: `debt-${monthIndex}`,
         type: 'suggestion',
         category: 'debt',
         title: '💳 Accelerate Debt Payoff',
@@ -236,7 +236,7 @@ export function generateInsights(
     if (income > baseline * 1.2 && income - baseline > 5000) {
       const extra = income - baseline;
       insights.push({
-        id: `windfall-${Date.now()}-${Math.random()}`,
+        id: `windfall-${monthIndex}`,
         type: 'positive',
         category: 'income',
         title: '🎉 Windfall Detected!',
@@ -254,7 +254,7 @@ export function generateInsights(
     const recommended = avgHousehold * settings.thresholds.emergencyMonths;
     if (avgHousehold > 0 && totalSavings < recommended) {
       insights.push({
-        id: `emergency-${Date.now()}-${Math.random()}`,
+        id: `emergency-${monthIndex}`,
         type: 'alert',
         category: 'savings',
         title: '🚨 Emergency Fund Low',
@@ -272,7 +272,7 @@ export function generateInsights(
     const disasterStreak = getDisasterStreak(yearData, monthIndex);
     if (disasterStreak >= 2) {
       insights.push({
-        id: `disaster-${Date.now()}-${Math.random()}`,
+        id: `disaster-${monthIndex}`,
         type: 'alert',
         category: 'general',
         title: `🔥 ${disasterStreak} Months of Overspending`,
@@ -288,7 +288,7 @@ export function generateInsights(
     const recoveryStreak = getRecoveryStreak(yearData, monthIndex);
     if (recoveryStreak >= 2) {
       insights.push({
-        id: `recovery-${Date.now()}-${Math.random()}`,
+        id: `recovery-${monthIndex}`,
         type: 'positive',
         category: 'general',
         title: `🌟 ${recoveryStreak} Months of Recovery!`,
@@ -311,7 +311,7 @@ export function generateInsights(
       if (forecast.predicted > cap * threshold) {
         const pct = Math.round((forecast.predicted / cap) * 100);
         insights.push({
-          id: `predict-${Date.now()}-${Math.random()}`,
+          id: `predict-${monthIndex}`,
           type: 'warning',
           category: 'household',
           title: '🔮 Next Month Projection',
