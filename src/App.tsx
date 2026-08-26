@@ -739,12 +739,15 @@ export default function App() {
 
   const [coachFilter, setCoachFilter] = useState<'all' | 'alert' | 'warning' | 'suggestion' | 'reminder' | 'positive'>('all');
   useEffect(() => {
-  // Debounce generation to avoid excessive calls
+  // Regenerate insights only when the month or year changes (or on manual
+  // refresh). NOTE: we deliberately do NOT depend on `currentYear?.modifiedAt`;
+  // generation used to bump that timestamp, which retriggered this effect in a
+  // ~500ms feedback loop — the source of the "flickering" Coach feed.
   const timer = setTimeout(() => {
     generateCoachInsights(selectedMonth);
   }, 500);
   return () => clearTimeout(timer);
-}, [selectedMonth, state.activeYear, currentYear?.modifiedAt]); // whenever any data changes
+}, [selectedMonth, state.activeYear, generateCoachInsights]);
 
   const grandIncoming = useMemo(() => months.reduce((s, _, i) => s + getIncomeTotal(i), 0), [months, getIncomeTotal]);
   const grandOutgoing = useMemo(() => months.reduce((s, _, i) => s + getOutgoingTotal(i), 0), [months, getOutgoingTotal]);
@@ -997,7 +1000,8 @@ export default function App() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto scroll-container px-4 pb-20">
+      <div className="flex-1 overflow-y-auto scroll-container px-4"
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 76px)' }}>
         <AnimatePresence mode="wait">
           {activeTab === 'overview' && (
             <motion.div key="overview" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.3 }} className="space-y-3 stagger-children">
@@ -1680,7 +1684,8 @@ export default function App() {
       </div>
 
       {/* Bottom Tab Bar */}
-      <div className="shrink-0 absolute bottom-0 left-0 right-0 z-40 px-4 pb-3 pt-2 bg-gradient-to-t from-black via-black/95 to-transparent">
+      <div className="shrink-0 absolute bottom-0 left-0 right-0 z-40 px-4 pt-2 bg-gradient-to-t from-black via-black/95 to-transparent"
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }}>
         <div className="glass-card rounded-2xl flex items-center justify-around py-2 px-1 ios-shadow relative">
           {tabs.map(tab => (
             <motion.button key={tab.id} whileTap={{ scale: 0.9 }} onClick={() => setActiveTab(tab.id)} className="relative flex-1 flex flex-col items-center gap-1 py-2 z-10">
