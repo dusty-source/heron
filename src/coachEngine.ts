@@ -80,12 +80,21 @@ function getSavingsTotal(yearData: YearData, monthIndex: number): number {
 }
 
 function getDebtBalance(yearData: YearData): number {
-  // Sum last positive value of each debt progression
+  // Anchored to the current calendar month (same semantics as the store's
+  // getCurrentDebtBalance) so coach debt advice matches the simulator.
+  const anchor = yearData.year === String(new Date().getFullYear()) ? new Date().getMonth() : 11;
   let total = 0;
   (yearData.debtProgression || []).forEach(d => {
-    for (let i = d.values.length - 1; i >= 0; i--) {
-      if (d.values[i] > 0) { total += d.values[i]; break; }
+    let balance = 0;
+    for (let i = anchor; i >= 0; i--) {
+      if (d.values[i] > 0) { balance = d.values[i]; break; }
     }
+    if (balance === 0) {
+      for (let i = anchor + 1; i < d.values.length; i++) {
+        if (d.values[i] > 0) { balance = d.values[i]; break; }
+      }
+    }
+    total += balance;
   });
   return total;
 }
