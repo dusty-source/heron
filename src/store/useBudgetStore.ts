@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 
 import { generateInsights, CoachInsight, CoachSettings, defaultCoachSettings } from '../coachEngine';
 
@@ -69,6 +69,7 @@ export interface BudgetState {
   activeYear: string;
   availableYears: string[];
   passcode: string | null;
+  setupChoiceDone: boolean;
 }
 
 export interface DebtSimulatorResult {
@@ -122,7 +123,7 @@ export interface InterceptorStatus {
   suggestions: { name: string; annualTotal: number; monthlyAvg: number }[];
 }
 
-// ─── Phase 5: Family Sync ────────────────────────────────────
+// â”€â”€â”€ Phase 5: Family Sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export interface SharedExpense {
   id: string;
@@ -157,11 +158,11 @@ export interface SyncPayload {
   checksum: string;
 }
 
-const STORAGE_KEY = 'babylonian-heron-data-v5';
+const STORAGE_KEY = 'babylonian-heron-data-v6';
 const MONTHS_12 = ['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY','AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER'];
 const now = () => new Date().toISOString();
 
-// ─── Passcode hashing (synchronous, avoids storing plaintext) ─────────
+// â”€â”€â”€ Passcode hashing (synchronous, avoids storing plaintext) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Implementation lives in ../utils/sha256 so it can be unit-tested in isolation.
 import { hashPasscode } from '../utils/sha256';
 const PASSCODE_SALT = 'babylonian-heron::v1::';
@@ -174,12 +175,7 @@ function createEmptyYear(year: string): YearData {
   return {
     year,
     months: [...MONTHS_12],
-    incomeEntries: [
-      { id: 'salary', name: 'SALARY', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'interest', name: 'INTEREST', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'retained', name: 'RETAINED', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'other', name: 'OTHER SOURCES', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-    ],
+    incomeEntries: [], // user adds their own income sources
     outgoingEntries: [
       { id: 'saving10', name: '10% - SAVING', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
       { id: 'house70', name: '70% - HOUSEHOLD', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
@@ -198,52 +194,14 @@ function createEmptyYear(year: string): YearData {
     remarks: {
       saving10: Object.fromEntries(MONTHS_12.map((_, i) => [String(i), 'RETAINER'])),
       house70: Object.fromEntries(MONTHS_12.map((_, i) => [String(i), 'IN CONTROL'])),
-      debt20: Object.fromEntries(MONTHS_12.map((_, i) => [String(i), 'BRAVO!'])),
+      debt20: Object.fromEntries(MONTHS_12.map((_, i) => [String(i), 'IN CONTROL'])),
     },
-    householdExpenses: [
-      { id: 'house-rent', name: 'HOUSE RENT', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'lift-rent', name: 'LIFT RENT', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'school-fee', name: 'SCHOOL FEE', values: new Array(12).fill(0), recurring: 'quarterly', createdAt: ts, modifiedAt: ts },
-      { id: 'school-transport', name: 'SCHOOL TRANSPORT', values: new Array(12).fill(0), recurring: 'quarterly', createdAt: ts, modifiedAt: ts },
-      { id: 'school-addon', name: 'SCHOOL ADD ON', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'grocery', name: 'GROCERY', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'equipment', name: 'EQUIPMENT ANY', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'electricity', name: 'ELECTRICITY', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'internet', name: 'INTERNET', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'vehicle-insurance', name: 'VEHICLE INSURANCE', values: new Array(12).fill(0), recurring: 'annual', createdAt: ts, modifiedAt: ts },
-      { id: 'vehicle-fuel', name: 'VEHICLE FUEL', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'vehicle-repairs', name: 'VEHICLE REPAIRS', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'vehicle-parking', name: 'VEHICLE PARKING', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'cellphone', name: 'CELLPHONE SERVICES', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'milk', name: 'MILK', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'fooding', name: 'FOODING', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'clothing', name: 'CLOTHING', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-    ],
-    debtRepayment: [
-      { id: 'vehicle-emi', name: 'VEHICLE EMI', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-      { id: 'gpu-emi', name: 'GPU EMI', values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts },
-    ],
-    savingsData: [
-      { id: 'sukanya', name: 'SUKANYA', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-    ],
-    debtProgression: [
-      { id: 'vehicle', name: 'VEHICLE', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'gpu', name: 'GPU', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-      { id: 'cpu', name: 'CPU', values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts },
-    ],
-    debtMeta: [
-      { debtId: 'vehicle', name: 'VEHICLE', interestRate: 8.5, emiAmount: 42100, originalPrincipal: 1500000, startMonthIndex: 0 },
-      { debtId: 'gpu', name: 'GPU', interestRate: 12.0, emiAmount: 5000, originalPrincipal: 50000, startMonthIndex: 0 },
-      { debtId: 'cpu', name: 'CPU', interestRate: 10.0, emiAmount: 0, originalPrincipal: 40000, startMonthIndex: 0 },
-    ],
-    taxShieldEntries: [
-      { id: 'ppf', name: 'PPF', category: 'ppf', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-      { id: 'elss', name: 'ELSS (Tax Saver MF)', category: 'elss', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-      { id: 'nps', name: 'NPS Tier 1', category: 'nps', values: new Array(12).fill(0), limit: 50000, createdAt: ts, modifiedAt: ts },
-      { id: 'sukanya', name: 'Sukanya Samriddhi', category: 'sukanya', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-      { id: 'lic', name: 'LIC / Term Insurance', category: 'insurance', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-      { id: 'tax-fd', name: 'Tax Saver FD', category: 'fd', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-    ],
+    householdExpenses: [], // user adds their own expense categories
+    debtRepayment: [], // user adds their own EMIs
+    savingsData: [], // user adds their own savings instruments
+    debtProgression: [], // user adds their own debts
+    debtMeta: [], // paired debtMeta rows are created with each debt entry
+    taxShieldEntries: [], // user adds their own tax instruments
     familySync: { enabled: false, partnerName: '', sharedExpenses: [], noSpendStreak: 0, lastNoSpendDate: null, partnerStreak: 0 },
     windfallBaseline: 0,
     auditLog: [],
@@ -254,49 +212,22 @@ function createEmptyYear(year: string): YearData {
   };
 }
 
-function migrateLegacyData(): BudgetState {
-  const y2026 = createEmptyYear('2026');
-  const y2027 = createEmptyYear('2027');
-
-  const origIncome = [[176588,171000,176000,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0],[0,25000,0,0,0,0,0,0,0,0,0,0],[49661,0,0,0,0,0,0,0,0,0,0,0]];
-  const origOutgoing = [[0,0,0,0,0,0,0,0,0,0,0,0],[145887,143400,44680,35380,112300,35380,35380,112300,35380,35380,0,0],[47100,47100,47100,47100,47100,47100,47100,47100,42100,42100,0,0]];
-  const origAlloc = [[17658.8,17100,17600,0,0,0,0,0,0,0,0,0],[123611.6,119700,123200,0,0,0,0,0,0,0,0,0],[35317.6,34200,35200,0,0,0,0,0,0,0,0,0]];
-  const origStatus = [[-17658.8,-17100,-17600,0,0,0,0,0,0,0,0,0],[22275.4,23700,78520,-35380,-112300,-35380,-35380,-112300,-35380,-35380,0,0],[11782.4,12900,-11900,-47100,-47100,-47100,-47100,-47100,-42100,-42100,0,0]];
-  const origHouse = [[25000,25000,25000,25000,25000,25000,25000,25000,25000,25000,0,0],[2000,2000,2000,2000,2000,2000,2000,2000,2000,2000,0,0],[0,55320,0,0,55320,0,0,55320,0,0,0,0],[0,21600,0,0,21600,0,0,21600,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0],[24420,0,0,0,0,0,0,0,0,0,0,0],[55500,15200,1800,0,0,0,0,0,0,0,0,0],[7500,7500,7500,0,0,0,0,0,0,0,0,0],[0,4200,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0],[9987,4600,0,0,0,0,0,0,0,0,0,0],[1100,0,0,0,0,0,0,0,0,0,0,0],[1200,1200,1200,1200,1200,1200,1200,1200,1200,1200,0,0],[1180,1180,1180,1180,1180,1180,1180,1180,1180,1180,0,0],[6000,4000,6000,6000,6000,6000,6000,6000,6000,6000,0,0],[3000,1600,0,0,0,0,0,0,0,0,0,0],[9000,0,0,0,0,0,0,0,0,0,0,0]];
-  const origDebt = [[42100,42100,42100,42100,42100,42100,42100,42100,42100,42100,0,0],[5000,5000,5000,5000,5000,5000,5000,5000,0,0,0,0]];
-  const origSavings = [[0,0,0,0,0,0,0,0,0,0,0,0]];
-  const origDebtProg = [[1273188,1240636.91,1207841.687,1174800.499,1141511.503,1107972.839,1074182.636,1040139.006,1005840.048,971283.8485,0,0],[36000,31500,27000,22500,18000,13500,9000,4500,0,0,0,0],[40000,0,0,0,0,0,0,0,0,0,0,0]];
-
-  for (let i = 0; i < 10; i++) {
-    y2026.incomeEntries.forEach((e, ei) => { e.values[i] = origIncome[ei][i]; });
-    y2026.outgoingEntries.forEach((e, ei) => { e.values[i] = origOutgoing[ei][i]; });
-    y2026.allocationEntries.forEach((e, ei) => { e.values[i] = origAlloc[ei][i]; });
-    y2026.statusEntries.forEach((e, ei) => { e.values[i] = origStatus[ei][i]; });
-    y2026.householdExpenses.forEach((e, ei) => { e.values[i] = origHouse[ei][i]; });
-    y2026.debtRepayment.forEach((e, ei) => { e.values[i] = origDebt[ei][i]; });
-    y2026.savingsData.forEach((e, ei) => { e.values[i] = origSavings[ei][i]; });
-    y2026.debtProgression.forEach((e, ei) => { e.values[i] = origDebtProg[ei][i]; });
-  }
-
-  const origRemarksS = ['HAND TO MOUTH','HAND TO MOUTH','HAND TO MOUTH','RETAINER','RETAINER','RETAINER','RETAINER','RETAINER','RETAINER','RETAINER','RETAINER','RETAINER'];
-  const origRemarksH = ['WISHFUL FLOCK','WISHFUL FLOCK','WISHFUL FLOCK','IN CONTROL','IN CONTROL','IN CONTROL','IN CONTROL','IN CONTROL','IN CONTROL','IN CONTROL','IN CONTROL','IN CONTROL'];
-  const origRemarksD = ['DISASTER IN MAKING','DISASTER IN MAKING','BRAVO!','BRAVO!','BRAVO!','BRAVO!','BRAVO!','BRAVO!','BRAVO!','BRAVO!','BRAVO!','BRAVO!'];
-  for (let i = 0; i < 10; i++) {
-    y2026.remarks.saving10[String(i)] = origRemarksS[i];
-    y2026.remarks.house70[String(i)] = origRemarksH[i];
-    y2026.remarks.debt20[String(i)] = origRemarksD[i];
-  }
-
+// A brand-new state with NO prefilled numbers: every section starts empty and
+// the user adds their own income, expenses, debts, EMIs, savings and tax rows.
+function createFreshState(setupChoiceDone: boolean): BudgetState {
+  const nowYear = String(new Date().getFullYear());
+  const nextYear = String(new Date().getFullYear() + 1);
   return {
-    years: { '2026': y2026, '2027': y2027 },
-    activeYear: '2026',
-    availableYears: ['2026', '2027'],
+    years: { [nowYear]: createEmptyYear(nowYear), [nextYear]: createEmptyYear(nextYear) },
+    activeYear: nowYear,
+    availableYears: [nowYear, nextYear],
     passcode: null,
+    setupChoiceDone,
   };
 }
 
 function migrateV2ToV3(state: any): BudgetState {
-  if (!state || !state.years) return migrateLegacyData();
+  if (!state || !state.years) return createFreshState(true);
   for (const year of Object.keys(state.years)) {
     const y = state.years[year];
     if (!y) continue;
@@ -307,41 +238,26 @@ function migrateV2ToV3(state: any): BudgetState {
         if (!entry.recurring) entry.recurring = 'none';
       }
     }
-    if (!y.debtMeta || y.debtMeta.length === 0) {
-      y.debtMeta = [
-        { debtId: 'vehicle', name: 'VEHICLE', interestRate: 8.5, emiAmount: 42100, originalPrincipal: 1500000, startMonthIndex: 0 },
-        { debtId: 'gpu', name: 'GPU', interestRate: 12.0, emiAmount: 5000, originalPrincipal: 50000, startMonthIndex: 0 },
-        { debtId: 'cpu', name: 'CPU', interestRate: 10.0, emiAmount: 0, originalPrincipal: 40000, startMonthIndex: 0 },
-      ];
-    }
+    if (!y.debtMeta) y.debtMeta = [];
   }
   if (!state.passcode && 'passcode' in state === false) state.passcode = null;
   return state as BudgetState;
 }
 
 function migrateV3ToV4(state: any): BudgetState {
-  if (!state || !state.years) return migrateLegacyData();
+  if (!state || !state.years) return createFreshState(true);
   const ts = now();
   for (const year of Object.keys(state.years)) {
     const y = state.years[year];
     if (!y) continue;
-    if (!y.taxShieldEntries || y.taxShieldEntries.length === 0) {
-      y.taxShieldEntries = [
-        { id: 'ppf', name: 'PPF', category: 'ppf', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-        { id: 'elss', name: 'ELSS (Tax Saver MF)', category: 'elss', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-        { id: 'nps', name: 'NPS Tier 1', category: 'nps', values: new Array(12).fill(0), limit: 50000, createdAt: ts, modifiedAt: ts },
-        { id: 'sukanya', name: 'Sukanya Samriddhi', category: 'sukanya', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-        { id: 'lic', name: 'LIC / Term Insurance', category: 'insurance', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-        { id: 'tax-fd', name: 'Tax Saver FD', category: 'fd', values: new Array(12).fill(0), limit: 150000, createdAt: ts, modifiedAt: ts },
-      ];
-    }
+    if (!y.taxShieldEntries) y.taxShieldEntries = [];
     if (typeof y.windfallBaseline !== 'number') y.windfallBaseline = 0;
   }
   return state as BudgetState;
 }
 
 function migrateV4ToV5(state: any): BudgetState {
-  if (!state || !state.years) return migrateLegacyData();
+  if (!state || !state.years) return createFreshState(true);
   for (const year of Object.keys(state.years)) {
     const y = state.years[year];
     if (!y) continue;
@@ -355,17 +271,29 @@ function migrateV4ToV5(state: any): BudgetState {
 function loadState(): BudgetState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) { const parsed = JSON.parse(raw); return migrateV4ToV5(parsed); }
-    const rawV4 = localStorage.getItem('babylonian-heron-data-v4');
-    if (rawV4) { const parsed = JSON.parse(rawV4); const migrated = migrateV4ToV5(parsed); localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated)); return migrated; }
-    const rawV3 = localStorage.getItem('babylonian-heron-data-v3');
-    if (rawV3) { const parsedV3 = JSON.parse(rawV3); const migrated = migrateV4ToV5(migrateV3ToV4(parsedV3)); localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated)); return migrated; }
-    const rawV2 = localStorage.getItem('babylonian-heron-data-v2');
-    if (rawV2) { const parsedV2 = JSON.parse(rawV2); const migrated = migrateV4ToV5(migrateV3ToV4(migrateV2ToV3(parsedV2))); localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated)); return migrated; }
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const migrated = migrateV4ToV5(parsed);
+      if (typeof migrated.setupChoiceDone !== 'boolean') migrated.setupChoiceDone = true;
+      return migrated;
+    }
+    // Older app versions: bring stored data forward so the user can choose
+    // to retain it (setup-choice dialog) instead of silently discarding it.
+    const legacyKeys = ['babylonian-heron-data-v5', 'babylonian-heron-data-v4', 'babylonian-heron-data-v3', 'babylonian-heron-data-v2'];
+    for (const key of legacyKeys) {
+      const oldRaw = localStorage.getItem(key);
+      if (!oldRaw) continue;
+      let parsed = JSON.parse(oldRaw);
+      if (key.endsWith('v2')) parsed = migrateV2ToV3(parsed);
+      if (key.endsWith('v2') || key.endsWith('v3')) parsed = migrateV3ToV4(parsed);
+      const migrated = migrateV4ToV5(parsed);
+      migrated.setupChoiceDone = false; // ask: retain existing data or start afresh
+      return migrated;
+    }
   } catch { /* ignore */ }
-  return migrateLegacyData();
+  // True fresh install: nothing stored anywhere -> start empty, no dialog needed.
+  return createFreshState(true);
 }
-
 function saveState(state: BudgetState) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
 }
@@ -427,7 +355,11 @@ export function useBudgetStore() {
       const id = `${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
       const ts = now();
       entries.push({ id, name, values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts });
-      const updated = { ...y, [section]: entries, modifiedAt: ts };
+      // A new debt row needs a paired debtMeta so the payoff simulator can track it.
+      const newMeta = section === 'debtProgression'
+        ? [...y.debtMeta, { debtId: id, name, interestRate: 0, emiAmount: 0, originalPrincipal: 0, startMonthIndex: 0 }]
+        : y.debtMeta;
+      const updated = { ...y, [section]: entries, debtMeta: newMeta, modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
       const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'add', section: String(section), entryName: name, timestamp: ts };
@@ -443,7 +375,9 @@ export function useBudgetStore() {
       const entries = (y[section] as DataEntry[]);
       const target = entries.find(e => e.id === entryId);
       const filtered = entries.filter(e => e.id !== entryId);
-      const updated = { ...y, [section]: filtered, modifiedAt: now() };
+      // Removing a debt row must also remove its paired debtMeta (no orphans).
+      const newMeta = section === 'debtProgression' ? y.debtMeta.filter(m => m.debtId !== entryId) : y.debtMeta;
+      const updated = { ...y, [section]: filtered, debtMeta: newMeta, modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       if (target) {
         const auditY = newState.years[newState.activeYear];
@@ -473,7 +407,18 @@ export function useBudgetStore() {
     });
   }, []);
 
-  const resetToDefaults = useCallback(() => { setState(migrateLegacyData()); }, []);
+  const resetToDefaults = useCallback(() => {
+    setState(prev => ({ ...createFreshState(true), passcode: prev.passcode }));
+  }, []);
+
+  // One-time first-run choice: retain data carried over from an older app
+  // version, or wipe everything and start with an empty slate.
+  const completeSetup = useCallback((retainExisting: boolean) => {
+    setState(prev => {
+      if (retainExisting) return { ...prev, setupChoiceDone: true };
+      return { ...createFreshState(true), passcode: prev.passcode };
+    });
+  }, []);
 
   const getTotal = useCallback((section: keyof YearData, monthIndex: number) => {
     const y = currentYear;
@@ -501,7 +446,7 @@ export function useBudgetStore() {
   }, []);
 
   const setPasscode = useCallback((passcode: string | null) => {
-    // Store only a salted hash — never the plaintext PIN.
+    // Store only a salted hash â€” never the plaintext PIN.
     setState(prev => ({ ...prev, passcode: passcode == null ? null : saltedHash(passcode) }));
   }, []);
   const verifyPasscode = useCallback((input: string) => {
@@ -743,8 +688,8 @@ export function useBudgetStore() {
   const getTaxShieldStatus = useCallback((monthIndex: number): TaxShieldStatus => {
     const y = currentYear;
     const LIMIT_80C = 150000;   // PPF, ELSS, Sukanya, Tax FD, life-insurance premium (Sec 80C)
-    const LIMIT_NPS = 50000;    // NPS additional contribution (Sec 80CCD(1B)) — separate head
-    const LIMIT_80D = 25000;    // Health insurance premium (Sec 80D, self + family) — separate head
+    const LIMIT_NPS = 50000;    // NPS additional contribution (Sec 80CCD(1B)) â€” separate head
+    const LIMIT_80D = 25000;    // Health insurance premium (Sec 80D, self + family) â€” separate head
     const TOTAL_LIMIT = LIMIT_80C + LIMIT_NPS + LIMIT_80D;
     if (!y) return { filled: 0, gap: TOTAL_LIMIT, limit: TOTAL_LIMIT, pct: 0, monthlySipNeeded: 0, monthsRemaining: 0, entries: [] };
     const entries = y.taxShieldEntries.map(e => ({ name: e.name, value: e.values[monthIndex] || 0, category: e.category }));
@@ -979,10 +924,10 @@ const applySyncPayload = useCallback((encoded: string) => {
     return; // malformed base64 or JSON
   }
   if (!payload || !Array.isArray(payload.householdExpenses)) return;
-  // Reject edited/corrupted payloads — the same checksum is embedded on generate.
+  // Reject edited/corrupted payloads â€” the same checksum is embedded on generate.
   const expectedChecksum = btoa(JSON.stringify(payload.householdExpenses)).slice(0, 8);
   if (payload.checksum && payload.checksum !== expectedChecksum) {
-    console.warn('[heron] Sync payload checksum mismatch – ignoring payload.', { got: payload.checksum, expectedChecksum });
+    console.warn('[heron] Sync payload checksum mismatch â€“ ignoring payload.', { got: payload.checksum, expectedChecksum });
     return;
   }
   setState(prev => {
@@ -1066,12 +1011,12 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
   </style>
 </head>
 <body>
-  <h1>Babylonian Heron — ${y.months[monthIndex]} ${y.year}</h1>
+  <h1>Babylonian Heron â€” ${y.months[monthIndex]} ${y.year}</h1>
   <div class="summary">
-    <div class="card"><div class="card-label">Total Income</div><div class="card-value green">₹${income.toLocaleString('en-IN')}</div></div>
-    <div class="card"><div class="card-label">Household</div><div class="card-value red">₹${household.toLocaleString('en-IN')}</div></div>
-    <div class="card"><div class="card-label">Debt Repayment</div><div class="card-value blue">₹${debt.toLocaleString('en-IN')}</div></div>
-    <div class="card"><div class="card-label">Savings</div><div class="card-value green">₹${savings.toLocaleString('en-IN')}</div></div>
+    <div class="card"><div class="card-label">Total Income</div><div class="card-value green">â‚¹${income.toLocaleString('en-IN')}</div></div>
+    <div class="card"><div class="card-label">Household</div><div class="card-value red">â‚¹${household.toLocaleString('en-IN')}</div></div>
+    <div class="card"><div class="card-label">Debt Repayment</div><div class="card-value blue">â‚¹${debt.toLocaleString('en-IN')}</div></div>
+    <div class="card"><div class="card-label">Savings</div><div class="card-value green">â‚¹${savings.toLocaleString('en-IN')}</div></div>
   </div>
   <h2>Household Expenses</h2>
   <table>
@@ -1079,11 +1024,11 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
     <tbody>
       ${y.householdExpenses.filter(e => e.values[monthIndex] > 0).map(e => {
         const pct = household > 0 ? Math.round((e.values[monthIndex] / household) * 100) : 0;
-        return `<tr><td>${e.name}</td><td>₹${e.values[monthIndex].toLocaleString('en-IN')}</td><td>${pct}%</td></tr>`;
+        return `<tr><td>${e.name}</td><td>â‚¹${e.values[monthIndex].toLocaleString('en-IN')}</td><td>${pct}%</td></tr>`;
       }).join('')}
     </tbody>
   </table>
-  <div class="footer">Generated by Babylonian Heron • ${new Date().toLocaleDateString('en-IN')}</div>
+  <div class="footer">Generated by Babylonian Heron â€¢ ${new Date().toLocaleDateString('en-IN')}</div>
 </body>
 </html>`;
   return html;
@@ -1105,7 +1050,7 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
   const getDebtRepaymentTotal = useCallback((monthIndex: number) => getTotal('debtRepayment', monthIndex), [getTotal]);
   const getSavingsTotal = useCallback((monthIndex: number) => getTotal('savingsData', monthIndex), [getTotal]);
   
-  // ─── Coach Engine ──────────────────────────────────────────
+  // â”€â”€â”€ Coach Engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const generateCoachInsights = useCallback((monthIndex: number) => {
     // Entirely stable (empty deps): computes from the latest state inside
     // setState, and skips no-op writes. The App debounced effect depends on
@@ -1178,6 +1123,7 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
     addYear,
     deleteYear,
     resetToDefaults,
+    completeSetup,
     autoAllocate,
     setPasscode,
     verifyPasscode,
