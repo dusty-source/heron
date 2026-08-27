@@ -611,14 +611,27 @@ export function useBudgetStore() {
     });
   }, []);
 
+  // The payoff simulator must start from the balance AS OF TODAY, not the
+  // last December value. For the active calendar year the anchor is the
+  // current month; for any other year it is December (latest recorded).
+  const getDebtAnchorMonth = useCallback(() => {
+    const active = parseInt(state.activeYear, 10);
+    return active === new Date().getFullYear() ? new Date().getMonth() : 11;
+  }, [state.activeYear]);
+
   const getCurrentDebtBalance = useCallback((debtId: string) => {
     const y = currentYear;
     if (!y) return 0;
     const prog = y.debtProgression.find(d => d.id === debtId);
     if (!prog) return 0;
-    for (let i = 11; i >= 0; i--) { if (prog.values[i] > 0) return prog.values[i]; }
+    const anchor = getDebtAnchorMonth();
+    // Most recent recorded (non-zero) balance at or before the anchor month.
+    for (let i = anchor; i >= 0; i--) { if (prog.values[i] > 0) return prog.values[i]; }
+    // Nothing recorded yet at/before the anchor: fall back to the earliest
+    // forward projection so the simulator still has a starting balance.
+    for (let i = anchor + 1; i < 12; i++) { if (prog.values[i] > 0) return prog.values[i]; }
     return 0;
-  }, [currentYear]);
+  }, [currentYear, getDebtAnchorMonth]);
 
   const getDebtMonthsRemaining = useCallback((debtId: string) => {
     const y = currentYear;
@@ -676,6 +689,9 @@ export function useBudgetStore() {
     const balance = getCurrentDebtBalance(debtId);
     if (!meta || balance <= 0 || meta.emiAmount <= 0) return null;
     const rate = meta.interestRate / 100 / 12;
+    // If the EMI cannot even cover the monthly interest, the balance never
+    // amortizes and a baseline-vs-extra comparison is meaningless.
+    if (meta.emiAmount <= rate * balance) return null;
     let bBalance = balance, bMonths = 0, bInterest = 0;
     while (bBalance > 0.01 && bMonths < 600) { bMonths++; const interest = bBalance * rate; bInterest += interest; bBalance += interest - meta.emiAmount; if (bBalance <= 0) bBalance = 0; }
     let eBalance = balance, eMonths = 0, eInterest = 0;
