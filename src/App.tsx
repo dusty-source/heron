@@ -653,7 +653,7 @@ function SharedDashboard({ expenses }: { expenses: SharedExpense[] }) {
 /* ─── Main App ────────────────────────────────────────────── */
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
-  const [selectedMonth, setSelectedMonth] = useState(0);
+  const [selectedMonth, setSelectedMonth] = useState(() => new Date().getMonth()); // start at current calendar month
   const [editSection, setEditSection] = useState<EditSection>(null);
   const [newEntryName, setNewEntryName] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -698,6 +698,15 @@ export default function App() {
 
   const months = currentYear?.months || [];
   const currentMonth = months[selectedMonth] || '';
+
+  // Month belt: starts at the current calendar month and wraps Dec->Jan.
+  // Each chip carries its TRUE calendar index (0=Jan..11=Dec) so every data
+  // getter/update keeps reading the correct calendar month.
+  const monthBelt = useMemo(() => {
+    const src = currentYear?.months || [];
+    const start = new Date().getMonth();
+    return src.map((m, k) => ({ label: m, idx: (start + k) % 12 }));
+  }, [currentYear?.months]);
   const noSpendStatus = useMemo(() => getNoSpendStatus(), [getNoSpendStatus, currentYear, selectedMonth]);
   const incomeTotal = getIncomeTotal(selectedMonth);
   const outgoingTotal = getOutgoingTotal(selectedMonth);
@@ -988,12 +997,12 @@ export default function App() {
       {/* Month Selector */}
       <div className="shrink-0 px-4 mb-2">
         <div className="flex gap-1.5 overflow-x-auto scroll-x pb-1">
-          {months.map((m, i) => (
-            <motion.button key={m} whileTap={{ scale: 0.9 }} onClick={() => setSelectedMonth(i)}
+          {monthBelt.map(({ label, idx }) => (
+            <motion.button key={idx} whileTap={{ scale: 0.9 }} onClick={() => setSelectedMonth(idx)}
               className={`px-3 py-2 rounded-xl text-[11px] font-bold whitespace-nowrap transition-all ${
-                selectedMonth === i ? 'bg-ios-blue text-white ios-shadow-sm' : 'bg-ios-surface-2 text-ios-text-secondary'
+                selectedMonth === idx ? 'bg-ios-blue text-white ios-shadow-sm' : 'bg-ios-surface-2 text-ios-text-secondary'
               }`}>
-              {m}
+              {label}
             </motion.button>
           ))}
         </div>
