@@ -8,7 +8,6 @@ const config: CapacitorConfig = {
     androidScheme: 'https',
   },
   ios: {
-    contentInset: 'always',
     scheme: 'BabylonianHeron',
     allowsLinkPreview: false,
     scrollEnabled: true,
@@ -24,6 +23,11 @@ const config: CapacitorConfig = {
       showSpinner: false,
       splashFullScreen: true,
       splashImmersive: true,
+    },
+    StatusBar: {
+      overlaysWebView: true,
+      style: 'LIGHT',
+      backgroundColor: '#000000',
     },
   },
 };
