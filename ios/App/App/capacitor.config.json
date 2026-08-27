@@ -6,7 +6,6 @@
 		"androidScheme": "https"
 	},
 	"ios": {
-		"contentInset": "always",
 		"scheme": "BabylonianHeron",
 		"allowsLinkPreview": false,
 		"scrollEnabled": true,
@@ -22,6 +21,11 @@
 			"showSpinner": false,
 			"splashFullScreen": true,
 			"splashImmersive": true
+		},
+		"StatusBar": {
+			"overlaysWebView": true,
+			"style": "LIGHT",
+			"backgroundColor": "#000000"
 		}
 	},
 	"packageClassList": []
