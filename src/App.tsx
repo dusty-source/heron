@@ -709,14 +709,47 @@ export default function App() {
   const months = currentYear?.months || [];
   const currentMonth = months[selectedMonth] || '';
 
+  // Live calendar anchor: re-checked every minute AND immediately when the
+  // app returns from the background (iOS suspends timers), so the month belt
+  // and the selection roll over automatically when the calendar month changes.
+  const [now, setNow] = useState(() => new Date());
+  const calendarMonth = now.getMonth();
+  const autoMonthRef = useRef(calendarMonth); // month last set by auto-follow
+  useEffect(() => {
+    const check = () => {
+      const d = new Date();
+      setNow(prev => (prev.getMonth() !== d.getMonth() || prev.getFullYear() !== d.getFullYear() ? d : prev));
+    };
+    check();
+    const iv = setInterval(check, 60000);
+    const onVis = () => { if (document.visibilityState === 'visible') check(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
+  }, []);
+
+  // On calendar month rollover: follow automatically only if the user was
+  // still on the previously auto-selected month. A manual pick of another
+  // month is respected (no yanking); auto-follow resumes from the new month.
+  useEffect(() => {
+    if (selectedMonth === autoMonthRef.current) {
+      setSelectedMonth(calendarMonth);
+    }
+    autoMonthRef.current = calendarMonth;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarMonth]);
+
   // Month belt: starts at the current calendar month and wraps Dec->Jan.
   // Each chip carries its TRUE calendar index (0=Jan..11=Dec) so every data
-  // getter/update keeps reading the correct calendar month.
+  // getter/update keeps reading the correct calendar month, and the label
+  // is always the month its click actually selects.
   const monthBelt = useMemo(() => {
     const src = currentYear?.months || [];
-    const start = new Date().getMonth();
-    return src.map((m, k) => ({ label: m, idx: (start + k) % 12 }));
-  }, [currentYear?.months]);
+    const start = calendarMonth;
+    return src.map((_, k) => {
+      const idx = (start + k) % 12;
+      return { label: src[idx], idx };
+    });
+  }, [currentYear?.months, calendarMonth]);
   const noSpendStatus = useMemo(() => getNoSpendStatus(), [getNoSpendStatus, currentYear, selectedMonth]);
   const incomeTotal = getIncomeTotal(selectedMonth);
   const outgoingTotal = getOutgoingTotal(selectedMonth);
