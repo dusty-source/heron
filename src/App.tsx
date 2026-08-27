@@ -87,11 +87,12 @@ function RecurringBadge({ freq }: { freq?: RecurringFreq }) {
 
 /* ─── Editable Row ────────────────────────────────────────── */
 function EditableRow({
-  name, value, onChange, onNameChange, onDelete, isEditing, recurring, onRecurringChange
+  name, value, onChange, onNameChange, onDelete, isEditing, recurring, onRecurringChange, essential, onToggleEssential
 }: {
   name: string; value: number; onChange: (v: number) => void;
   onNameChange?: (n: string) => void; onDelete?: () => void;
   isEditing: boolean; recurring?: RecurringFreq; onRecurringChange?: (f: RecurringFreq) => void;
+  essential?: boolean; onToggleEssential?: () => void;
 }) {
   const [localVal, setLocalVal] = useState(String(value));
   const [localName, setLocalName] = useState(name);
@@ -125,6 +126,7 @@ function EditableRow({
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[13px] text-ios-text-secondary truncate">{name}</span>
           <RecurringBadge freq={recurring} />
+          {essential && <span className="text-[10px]" title="Essential — protected from Interceptor cuts">🛡</span>}
         </div>
         <span className="text-[13px] font-semibold text-ios-text tabular-nums">{formatCurrency(value)}</span>
       </motion.div>
@@ -149,6 +151,11 @@ function EditableRow({
             </button>
           ))}
         </div>
+      )}
+      {onToggleEssential && (
+        <motion.button whileTap={{ scale: 0.8 }} onClick={onToggleEssential}
+          className={`w-7 h-7 rounded-lg flex items-center justify-center text-[11px] ${essential ? 'bg-ios-green/20 text-ios-green' : 'bg-ios-surface-2 text-ios-text-secondary'}`}
+          title="Mark as essential (protected from Interceptor cuts)">🛡</motion.button>
       )}
       {onDelete && (
         <motion.button whileTap={{ scale: 0.8 }} onClick={onDelete} className="w-7 h-7 rounded-lg bg-ios-red/15 flex items-center justify-center text-ios-red">
@@ -383,6 +390,9 @@ function DebtSimulatorCard({ store }: { store: ReturnType<typeof useBudgetStore>
           </motion.div>
         );
       })}
+      {currentYear.debtMeta.length === 0 && (
+        <div className="py-4 text-center text-[11px] text-ios-text-secondary">No debts yet — add one under Debt Progression, then set its EMI, rate & principal here</div>
+      )}
       <div className="glass-card rounded-2xl p-4 ios-shadow">
         <div className="flex items-center justify-between mb-3">
           <span className="text-sm font-bold text-ios-text">Payoff Strategy</span>
@@ -685,8 +695,8 @@ export default function App() {
 
   const store = useBudgetStore();
   const { state, currentYear, updateEntryValue, updateEntryName, addEntry, deleteEntry,
-    setActiveYear, addYear, deleteYear, resetToDefaults,
-    autoAllocate, setPasscode, verifyPasscode, getBurnRate,
+    setActiveYear, addYear, deleteYear, resetToDefaults, completeSetup,
+    autoAllocate, autoAllocateAll, toggleEntryEssential, setPasscode, verifyPasscode, getBurnRate,
     getIncomeTotal, getOutgoingTotal, getAllocationTotal, getHouseholdTotal, getDebtRepaymentTotal, getSavingsTotal,
     toggleRecurring, applyRecurringAutopilot, getCommittedRecurring, getTrueDisposable,
     addTaxEntry, updateTaxEntryValue, deleteTaxEntry,
@@ -1032,14 +1042,14 @@ export default function App() {
                         <span className="text-ios-text-secondary font-medium">Incoming</span>
                         <span className="text-ios-green font-bold">{formatCurrency(incomeTotal)}</span>
                       </div>
-                      <ProgressBar value={incomeTotal} max={250000} color="#30d158" />
+                      <ProgressBar value={incomeTotal} max={Math.max(incomeTotal, outgoingTotal, 1)} color="#30d158" />
                     </div>
                     <div>
                       <div className="flex justify-between text-xs mb-1">
                         <span className="text-ios-text-secondary font-medium">Outgoing</span>
                         <span className="text-ios-red font-bold">{formatCurrency(outgoingTotal)}</span>
                       </div>
-                      <ProgressBar value={outgoingTotal} max={250000} color="#ff453a" />
+                      <ProgressBar value={outgoingTotal} max={Math.max(incomeTotal, outgoingTotal, 1)} color="#ff453a" />
                     </div>
                     <div>
                       <div className="flex justify-between text-xs mb-1">
@@ -1048,7 +1058,7 @@ export default function App() {
                           {formatCurrency(incomeTotal - outgoingTotal)}
                         </span>
                       </div>
-                      <ProgressBar value={Math.abs(incomeTotal - outgoingTotal)} max={100000} color={getStatusColor(incomeTotal - outgoingTotal)} />
+                      <ProgressBar value={Math.abs(incomeTotal - outgoingTotal)} max={Math.max(Math.abs(incomeTotal - outgoingTotal), incomeTotal, outgoingTotal, 1)} color={getStatusColor(incomeTotal - outgoingTotal)} />
                     </div>
                   </div>
                 </div>
@@ -1065,8 +1075,11 @@ export default function App() {
                       isEditing={editSection === 'income'}
                       onChange={v => handleIncomeEdit(entry.id, selectedMonth, v)}
                       onNameChange={n => updateEntryName('incomeEntries', entry.id, n)}
-                      onDelete={() => deleteEntry('incomeEntries', entry.id)} />
+                      onDelete={() => { deleteEntry('incomeEntries', entry.id); autoAllocateAll(); }} />
                   ))}
+                  {currentYear.incomeEntries.length === 0 && (
+                    <div className="py-4 text-center text-[11px] text-ios-text-secondary">No entries yet — tap + to add your first income source</div>
+                  )}
                   <div className="pt-2 border-t border-ios-border/15 flex justify-between">
                     <span className="text-xs font-bold text-ios-text">Total</span>
                     <span className="text-xs font-bold text-ios-green">{formatCurrency(incomeTotal)}</span>
@@ -1209,8 +1222,13 @@ export default function App() {
                       onRecurringChange={f => toggleRecurring('householdExpenses', entry.id, f)}
                       onChange={v => updateEntryValue('householdExpenses', entry.id, selectedMonth, v)}
                       onNameChange={n => updateEntryName('householdExpenses', entry.id, n)}
-                      onDelete={() => deleteEntry('householdExpenses', entry.id)} />
+                      onDelete={() => deleteEntry('householdExpenses', entry.id)}
+                      essential={entry.essential}
+                      onToggleEssential={() => toggleEntryEssential('householdExpenses', entry.id)} />
                   ))}
+                  {currentYear.householdExpenses.length === 0 && (
+                    <div className="py-4 text-center text-[11px] text-ios-text-secondary">No expense categories yet — tap + to add your first one</div>
+                  )}
                   <div className="pt-2 border-t border-ios-border/15 flex justify-between">
                     <span className="text-xs font-bold text-ios-text">Total</span>
                     <span className="text-xs font-bold text-ios-red">{formatCurrency(householdTotal)}</span>
@@ -1240,6 +1258,9 @@ export default function App() {
                       onNameChange={n => updateEntryName('debtRepayment', entry.id, n)}
                       onDelete={() => deleteEntry('debtRepayment', entry.id)} />
                   ))}
+                  {currentYear.debtRepayment.length === 0 && (
+                    <div className="py-4 text-center text-[11px] text-ios-text-secondary">No EMIs yet — tap + to add your debt repayments</div>
+                  )}
                   <div className="pt-2 border-t border-ios-border/15 flex justify-between">
                     <span className="text-xs font-bold text-ios-text">Total</span>
                     <span className="text-xs font-bold text-ios-orange">{formatCurrency(debtRepayTotal)}</span>
@@ -1258,6 +1279,9 @@ export default function App() {
                       onNameChange={n => updateEntryName('savingsData', entry.id, n)}
                       onDelete={() => deleteEntry('savingsData', entry.id)} />
                   ))}
+                  {currentYear.savingsData.length === 0 && (
+                    <div className="py-4 text-center text-[11px] text-ios-text-secondary">No savings instruments yet — tap + to add one</div>
+                  )}
                 </div>
               </div>
 
@@ -1292,6 +1316,9 @@ export default function App() {
                       onNameChange={n => updateEntryName('debtProgression', entry.id, n)}
                       onDelete={() => deleteEntry('debtProgression', entry.id)} />
                   ))}
+                  {currentYear.debtProgression.length === 0 && (
+                    <div className="py-4 text-center text-[11px] text-ios-text-secondary">No debts yet — tap + to add one, then set its principal, rate & EMI below</div>
+                  )}
                 </div>
               </div>
               {debtPieData.length > 0 && (
@@ -1404,6 +1431,9 @@ export default function App() {
                       </div>
                     );
                   })}
+                  {currentYear.taxShieldEntries.length === 0 && (
+                    <div className="py-4 text-center text-[11px] text-ios-text-secondary">No tax instruments yet — tap + to add PPF, ELSS, NPS etc.</div>
+                  )}
                 </div>
                 <motion.button whileTap={{ scale: 0.95 }} onClick={() => setEditSection(editSection === 'tax' ? null : 'tax')}
                   className={`w-full mt-3 py-2.5 rounded-xl text-xs font-bold transition-all ${editSection === 'tax' ? 'bg-ios-blue/15 text-ios-blue' : 'bg-ios-surface-2 text-ios-text-secondary'}`}>
@@ -1745,6 +1775,29 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* First-run Setup Choice Modal */}
+      <AnimatePresence>
+        {state.setupChoiceDone === false && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm px-6">
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }}
+              className="glass-card rounded-2xl p-5 w-full max-w-xs ios-shadow">
+              <div className="w-12 h-12 rounded-2xl bg-ios-blue/20 flex items-center justify-center mx-auto mb-3 text-2xl">🪶</div>
+              <h3 className="text-sm font-bold text-ios-text mb-2 tracking-tight text-center">Welcome to Heron</h3>
+              <p className="text-xs text-ios-text-secondary mb-4 leading-relaxed text-center">
+                Data from a previous version was found on this device. Keep it, or start with a clean slate and add everything yourself?
+              </p>
+              <div className="space-y-2">
+                <button onClick={() => completeSetup(false)}
+                  className="w-full py-2.5 rounded-xl bg-ios-blue text-xs font-bold text-white ios-shadow-sm">Start Afresh (recommended)</button>
+                <button onClick={() => completeSetup(true)}
+                  className="w-full py-2.5 rounded-xl bg-ios-surface-2 text-xs font-bold text-ios-text-secondary">Keep Existing Data</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Reset Confirm Modal */}
       <AnimatePresence>
         {showResetConfirm && (
@@ -1753,7 +1806,7 @@ export default function App() {
             <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
               className="glass-card rounded-2xl p-5 w-full max-w-xs ios-shadow">
               <h3 className="text-sm font-bold text-ios-text mb-2 tracking-tight">Reset All Data?</h3>
-              <p className="text-xs text-ios-text-secondary mb-4 leading-relaxed">This will erase all your edits and restore the original spreadsheet data.</p>
+              <p className="text-xs text-ios-text-secondary mb-4 leading-relaxed">This will erase all your entries and start with empty years. Export a backup first if needed.</p>
               <div className="flex gap-2">
                 <button onClick={() => setShowResetConfirm(false)}
                   className="flex-1 py-2.5 rounded-xl bg-ios-surface-2 text-xs font-bold text-ios-text-secondary">Cancel</button>
