@@ -7,6 +7,7 @@ export interface DataEntry {
   name: string;
   values: number[];
   recurring?: 'none' | 'monthly' | 'quarterly' | 'annual';
+  essential?: boolean; // user-marked essential (protected from Interceptor cut suggestions)
   createdAt: string;
   modifiedAt: string;
 }
@@ -161,6 +162,43 @@ export interface SyncPayload {
 const STORAGE_KEY = 'babylonian-heron-data-v6';
 const MONTHS_12 = ['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY','AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER'];
 const now = () => new Date().toISOString();
+
+// ─── Auto-derived remarks (status badges) ────────────────────────
+// Remarks drive the status badges, disaster/recovery streaks and the
+// Hand-to-Mouth Interceptor. They are re-derived from live data whenever
+// the underlying numbers change, so they can never go stale.
+type Remarks = Record<string, Record<string, string>>;
+function deriveRemarksForMonth(y: YearData, monthIndex: number): Remarks {
+  const sum = (arr: DataEntry[], m: number) => arr.reduce((sm, e) => sm + (e.values[m] || 0), 0);
+  const income = sum(y.incomeEntries, monthIndex);
+  const household = sum(y.householdExpenses, monthIndex);
+  const debt = sum(y.debtRepayment, monthIndex);
+  const savings = sum(y.savingsData, monthIndex);
+  const cap = y.allocationEntries.find(e => e.id === 'house70')?.values[monthIndex] || 0;
+  const pct = cap > 0 ? (household / cap) * 100 : 0;
+  const house70 = cap <= 0 ? 'IN CONTROL'
+    : pct >= 100 ? 'BROKEN'
+    : pct >= 85 ? 'DISASTER IN MAKING'
+    : pct >= 60 ? 'WATCH OUT'
+    : pct >= 30 ? 'IN CONTROL'
+    : 'BRAVO!';
+  const saveTarget = Math.round(income * 0.10);
+  const saving10 = income <= 0 ? 'RETAINER' : savings < saveTarget ? 'HAND TO MOUTH' : 'RETAINER';
+  const debtTarget = Math.round(income * 0.20);
+  const debt20 = income <= 0 ? 'IN CONTROL' : debt > 0 && debt >= debtTarget ? 'BRAVO!' : debt > 0 ? 'IN CONTROL' : 'PENDING';
+  return {
+    ...y.remarks,
+    saving10: { ...y.remarks.saving10, [String(monthIndex)]: saving10 },
+    house70: { ...y.remarks.house70, [String(monthIndex)]: house70 },
+    debt20: { ...y.remarks.debt20, [String(monthIndex)]: debt20 },
+  };
+}
+function deriveRemarksForYear(y: YearData): Remarks {
+  let remarks: Remarks = y.remarks;
+  for (let m = 0; m < 12; m++) remarks = deriveRemarksForMonth({ ...y, remarks }, m);
+  return remarks;
+}
+const REMARK_SECTIONS: (keyof YearData)[] = ['householdExpenses', 'incomeEntries', 'debtRepayment', 'savingsData'];
 
 // â”€â”€â”€ Passcode hashing (synchronous, avoids storing plaintext) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Implementation lives in ../utils/sha256 so it can be unit-tested in isolation.
@@ -319,7 +357,10 @@ export function useBudgetStore() {
       entry.values = newValues;
       entry.modifiedAt = now();
       entries[idx] = entry;
-      const updated = { ...y, [section]: entries, modifiedAt: now() };
+      // Auto-derive the status remarks so badges, streaks and the Interceptor stay in sync.
+      const base0 = { ...y, [section]: entries } as YearData;
+      const remarked0 = REMARK_SECTIONS.includes(section) ? { ...base0, remarks: deriveRemarksForMonth(base0, monthIndex) } : base0;
+      const updated = { ...remarked0, modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
       const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'edit', section: String(section), entryName: entry.name, oldValue: String(oldVal), newValue: String(value), monthIndex, timestamp: now() };
@@ -338,7 +379,11 @@ export function useBudgetStore() {
       const oldName = entries[idx].name;
       const entry = { ...entries[idx], name, modifiedAt: now() };
       entries[idx] = entry;
-      const updated = { ...y, [section]: entries, modifiedAt: now() };
+      // Renaming a debt row keeps its paired debtMeta name in sync.
+      const newMeta = section === 'debtProgression'
+        ? y.debtMeta.map(m => (m.debtId === entryId ? { ...m, name } : m))
+        : y.debtMeta;
+      const updated = { ...y, [section]: entries, debtMeta: newMeta, modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
       const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'rename', section: String(section), entryName: name, oldValue: oldName, newValue: name, timestamp: now() };
@@ -377,7 +422,9 @@ export function useBudgetStore() {
       const filtered = entries.filter(e => e.id !== entryId);
       // Removing a debt row must also remove its paired debtMeta (no orphans).
       const newMeta = section === 'debtProgression' ? y.debtMeta.filter(m => m.debtId !== entryId) : y.debtMeta;
-      const updated = { ...y, [section]: filtered, debtMeta: newMeta, modifiedAt: now() };
+      const base1 = { ...y, [section]: filtered, debtMeta: newMeta } as YearData;
+      const remarked1 = REMARK_SECTIONS.includes(section) ? { ...base1, remarks: deriveRemarksForYear(base1) } : base1;
+      const updated = { ...remarked1, modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       if (target) {
         const auditY = newState.years[newState.activeYear];
@@ -440,7 +487,46 @@ export function useBudgetStore() {
       if (saveIdx >= 0) alloc[saveIdx].values[monthIndex] = Math.round(totalIncome * 0.10);
       if (houseIdx >= 0) alloc[houseIdx].values[monthIndex] = Math.round(totalIncome * 0.70);
       if (debtIdx >= 0) alloc[debtIdx].values[monthIndex] = Math.round(totalIncome * 0.20);
-      const updated = { ...yr, allocationEntries: alloc, modifiedAt: now() };
+      const base2 = { ...yr, allocationEntries: alloc };
+      const updated = { ...base2, remarks: deriveRemarksForMonth(base2, monthIndex), modifiedAt: now() };
+      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+    });
+  }, []);
+
+  // Recompute the 70/20/10 allocation for EVERY month from the current income
+  // data (used after income entries are added/removed so allocations never go stale).
+  const autoAllocateAll = useCallback(() => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y) return prev;
+      const alloc = y.allocationEntries.map(e => ({ ...e, values: [...e.values] }));
+      for (let m = 0; m < 12; m++) {
+        const totalIncome = y.incomeEntries.reduce((sm, e) => sm + (e.values[m] || 0), 0);
+        const setVal = (id: string, v: number) => {
+          const i = alloc.findIndex(x => x.id === id);
+          if (i >= 0) alloc[i].values[m] = Math.round(v);
+        };
+        setVal('saving10', totalIncome * 0.10);
+        setVal('house70', totalIncome * 0.70);
+        setVal('debt20', totalIncome * 0.20);
+      }
+      const base3 = { ...y, allocationEntries: alloc };
+      const updated = { ...base3, remarks: deriveRemarksForYear(base3), modifiedAt: now() };
+      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+    });
+  }, []);
+
+  // Toggle the user's "essential" flag on an entry — essentials are protected
+  // from Hand-to-Mouth Interceptor cut suggestions.
+  const toggleEntryEssential = useCallback((section: keyof YearData, entryId: string) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y) return prev;
+      const entries = [...(y[section] as DataEntry[])];
+      const idx = entries.findIndex(e => e.id === entryId);
+      if (idx === -1) return prev;
+      entries[idx] = { ...entries[idx], essential: !entries[idx].essential, modifiedAt: now() };
+      const updated = { ...y, [section]: entries, modifiedAt: now() };
       return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
     });
   }, []);
@@ -519,7 +605,8 @@ export function useBudgetStore() {
         }
       }
       if (!changed) return prev;
-      const updated = { ...y, householdExpenses: household, modifiedAt: now() };
+      const base4 = { ...y, householdExpenses: household };
+      const updated = { ...base4, remarks: deriveRemarksForYear(base4), modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
       const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'edit', section: 'householdExpenses', entryName: 'Recurring Autopilot', oldValue: '0', newValue: `Applied to ${MONTHS_12[monthIndex]}`, timestamp: now() };
@@ -747,7 +834,8 @@ export function useBudgetStore() {
       pushOrAdd(savings, 'windfall-savings', 'WINDFALL SAVINGS', toSavings);
       pushOrAdd(household, 'windfall-buffer', 'WINDFALL BUFFER', toHousehold);
       pushOrAdd(debt, 'windfall-debt', 'WINDFALL DEBT KNOCKOUT', toDebt);
-      const updated = { ...y, savingsData: savings, householdExpenses: household, debtRepayment: debt, modifiedAt: ts };
+      const base5 = { ...y, savingsData: savings, householdExpenses: household, debtRepayment: debt };
+      const updated = { ...base5, remarks: deriveRemarksForYear(base5), modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
       auditY.auditLog = [{ id: `audit-${Date.now()}`, action: 'add', section: 'windfall', entryName: `Windfall Allocation`, newValue: `S:${toSavings} H:${toHousehold} D:${toDebt}`, timestamp: ts }, ...auditY.auditLog].slice(0, 100);
@@ -791,10 +879,12 @@ export function useBudgetStore() {
     const y = currentYear;
     const suggestions: { name: string; annualTotal: number; monthlyAvg: number }[] = [];
     if (y && streak >= 2) {
-      const protectedNames = ['HOUSE RENT', 'SCHOOL FEE', 'SCHOOL TRANSPORT', 'ELECTRICITY', 'INTERNET', 'MILK'];
+      const legacyProtected = ['HOUSE RENT', 'SCHOOL FEE', 'SCHOOL TRANSPORT', 'ELECTRICITY', 'INTERNET', 'MILK'];
+      // Protected = user-marked essential, a monthly commitment, or a known essential.
+      const isProtected = (e: DataEntry) => e.essential === true || e.recurring === 'monthly' || legacyProtected.includes(e.name);
       y.householdExpenses.forEach(e => {
         const total = e.values.reduce((a, b) => a + b, 0);
-        if (total > 5000 && !protectedNames.includes(e.name)) {
+        if (total > 5000 && !isProtected(e)) {
           suggestions.push({ name: e.name, annualTotal: total, monthlyAvg: Math.round(total / 12) });
         }
       });
@@ -895,12 +985,15 @@ const getNoSpendStatus = useCallback((): NoSpendStatus => {
   if (!y) return { streak: 0, partnerStreak: 0, combined: 0, todaySpent: false };
   const fs = y.familySync;
   const today = new Date().toISOString().split('T')[0];
-  const todaySpent = y.householdExpenses.some(e => {
-    const todayIdx = new Date().getMonth();
-    return e.values[todayIdx] > 0;
-  });
+  const nowDate = new Date();
+  // "Spent today" is only meaningful for the current calendar year/month.
+  // (Per-day expense tracking is not in the data model yet, so recording ANY
+  // expense in the current month is used as a conservative proxy.)
+  const todaySpent = state.activeYear === String(nowDate.getFullYear())
+    ? y.householdExpenses.some(e => e.values[nowDate.getMonth()] > 0)
+    : false;
   return { streak: fs.noSpendStreak, partnerStreak: fs.partnerStreak, combined: fs.noSpendStreak + fs.partnerStreak, todaySpent };
-}, [currentYear]);
+}, [currentYear, state.activeYear]);
 
 const generateSyncPayload = useCallback((): string => {
   const y = currentYear;
@@ -934,24 +1027,32 @@ const applySyncPayload = useCallback((encoded: string) => {
       const y = prev.years[prev.activeYear];
       if (!y) return prev;
       const shared: SharedExpense[] = [];
+      const household = y.householdExpenses.map(e => ({ ...e, values: [...e.values] }));
       payload.householdExpenses.forEach(pe => {
-        const existing = y.householdExpenses.find(e => e.name === pe.name);
-        if (existing) {
-          pe.values.forEach((v, mi) => {
-            if (v > 0 && existing.values[mi] !== v) {
-              shared.push({ id: `sync-${Date.now()}-${mi}`, name: pe.name, amount: v, monthIndex: mi, partner: payload.partnerName, timestamp: payload.timestamp });
-            }
-          });
+        if (!pe.name) return;
+        let entry = household.find(e => e.name === pe.name);
+        if (!entry) {
+          // Partner tracks an expense category we do not have yet — adopt it.
+          entry = { id: `sync-${pe.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`, name: pe.name, values: new Array(12).fill(0), recurring: 'none', createdAt: now(), modifiedAt: now() };
+          household.push(entry);
         }
+        pe.values.forEach((v, mi) => {
+          if (v > 0 && entry && entry.values[mi] !== v) {
+            shared.push({ id: `sync-${Date.now()}-${mi}`, name: pe.name, amount: v, monthIndex: mi, partner: payload.partnerName, timestamp: payload.timestamp });
+            // Adopt the partner number where we have not recorded one; keep ours otherwise.
+            if (entry.values[mi] === 0) entry.values[mi] = v;
+          }
+        });
       });
       const fs = y.familySync;
-      const updated = { ...y, familySync: { ...fs, partnerStreak: payload.noSpendStreak, sharedExpenses: [...fs.sharedExpenses, ...shared].slice(0, 50) }, modifiedAt: now() };
+      const base6 = { ...y, householdExpenses: household };
+      const updated = { ...base6, remarks: deriveRemarksForYear(base6), familySync: { ...fs, partnerStreak: payload.noSpendStreak, sharedExpenses: [...fs.sharedExpenses, ...shared].slice(0, 50) }, modifiedAt: now() };
       return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
     });
 }, []);
 
 // Phase 5: Export & Backup
-const exportToCSV = useCallback((monthIndex?: number): string => {
+const exportToCSV = useCallback((): string => {
   const y = currentYear;
   if (!y) return '';
   let csv = 'Category,Entry,Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec,Total\n';
@@ -962,11 +1063,12 @@ const exportToCSV = useCallback((monthIndex?: number): string => {
     { name: 'Savings', key: 'savingsData' as const },
     { name: 'Tax Shield', key: 'taxShieldEntries' as const },
   ];
+  const csvCell = (v: string) => (/[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
   sections.forEach(sec => {
     const entries = y[sec.key] as DataEntry[];
     entries.forEach(e => {
       const total = e.values.reduce((a, b) => a + b, 0);
-      csv += `${sec.name},${e.name},${e.values.join(',')},${total}\n`;
+      csv += `${csvCell(sec.name)},${csvCell(e.name)},${e.values.join(',')},${total}\n`;
     });
   });
   return csv;
@@ -1125,6 +1227,8 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
     resetToDefaults,
     completeSetup,
     autoAllocate,
+    autoAllocateAll,
+    toggleEntryEssential,
     setPasscode,
     verifyPasscode,
     getBurnRate,
