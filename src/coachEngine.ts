@@ -339,3 +339,67 @@ export function generateInsights(
 
   return insights;
 }
+
+// Annual analysis: savings rate, spending spread, concentration, debt, tax shield.
+export function generateAnnualInsights(yearData: YearData, settings: CoachSettings): CoachInsight[] {
+  const insights: CoachInsight[] = [];
+  const year = yearData.year;
+  const sum = (arr: { values: number[] }[]) => arr.reduce((s2, e) => s2 + e.values.reduce((a, b) => a + b, 0), 0);
+  const income = sum(yearData.incomeEntries);
+  const household = sum(yearData.householdExpenses);
+  const savings = sum(yearData.savingsData);
+  const debtPaid = sum(yearData.debtRepayment);
+  const activeMonths = yearData.months.filter((_, i) => yearData.incomeEntries.some(e => e.values[i] > 0) || yearData.householdExpenses.some(e => e.values[i] > 0)).length;
+  const push = (ins: Omit<CoachInsight, 'generatedAt' | 'isDismissed'>) => insights.push({ ...ins, generatedAt: new Date().toISOString(), isDismissed: false });
+  if (activeMonths === 0) {
+    push({ id: `annual-nodata-${year}`, type: 'reminder', category: 'general', priority: 3, title: `No data for ${year} yet`, description: 'Import a bank statement (Sync tab) or add entries in Details to unlock the annual analysis.' });
+    return insights;
+  }
+  if (income > 0) {
+    const kept = savings + debtPaid;
+    const rate = Math.round((kept / income) * 100);
+    push({ id: `annual-savingsrate-${year}`, type: rate >= 30 ? 'positive' : rate >= 10 ? 'suggestion' : 'warning', category: 'savings', priority: 1, title: `You kept ${rate}% of your income in ${year}`, description: `Savings ${formatCurrency(savings)} + debt payments ${formatCurrency(debtPaid)} = ${formatCurrency(kept)} of ${formatCurrency(income)} income. ${rate >= 30 ? 'Excellent discipline.' : rate >= 10 ? 'Aim for 30% by year end.' : 'Try to raise this above 10%.'}` });
+  }
+  const monthHouse = yearData.months.map((_, i) => getHouseholdTotal(yearData, i));
+  const withData = monthHouse.map((v, i) => ({ v, i })).filter(x => x.v > 0);
+  if (withData.length >= 2) {
+    const max = withData.reduce((a, b) => (b.v > a.v ? b : a));
+    const min = withData.reduce((a, b) => (b.v < a.v ? b : a));
+    push({ id: `annual-spread-${year}`, type: 'suggestion', category: 'household', priority: 2, title: `Biggest spending gap: ${Math.round(((max.v - min.v) / min.v) * 100)}%`, description: `Highest: ${yearData.months[max.i]} at ${formatCurrency(max.v)}; lowest: ${yearData.months[min.i]} at ${formatCurrency(min.v)}. Levelling out this swing smooths your year.` });
+  }
+  const top = [...yearData.householdExpenses].map(e => ({ name: e.name, total: e.values.reduce((a, b) => a + b, 0) })).filter(e => e.total > 0).sort((a, b) => b.total - a.total).slice(0, 3);
+  if (top.length > 0 && household > 0) {
+    const share = Math.round((top.reduce((s2, e) => s2 + e.total, 0) / household) * 100);
+    push({ id: `annual-concentration-${year}`, type: 'suggestion', category: 'household', priority: 2, title: `Top ${top.length} categories = ${share}% of spending`, description: top.map(e => `${e.name}: ${formatCurrency(e.total)}`).join(' | ') });
+  }
+  const capTotal = (yearData.allocationEntries.find(e => e.id === 'house70')?.values.reduce((a, b) => a + b, 0)) || 0;
+  if (capTotal > 0) {
+    const pct = Math.round((household / capTotal) * 100);
+    if (pct > 100) push({ id: `annual-cap-${year}`, type: 'alert', category: 'household', priority: 1, title: `${pct}% of your annual household budget used`, description: `Spent ${formatCurrency(household)} against a ${formatCurrency(capTotal)} yearly cap.` });
+    else if (pct >= 90) push({ id: `annual-cap-${year}`, type: 'warning', category: 'household', priority: 1, title: `${pct}% of your annual household budget used`, description: `Spent ${formatCurrency(household)} of ${formatCurrency(capTotal)}. Watch the remaining months closely.` });
+  }
+  let debtStart = 0, debtEnd = 0;
+  yearData.debtProgression.forEach(d => {
+    const first = d.values.find(v => v > 0) || 0;
+    const last = [...d.values].reverse().find(v => v > 0) || 0;
+    debtStart += first; debtEnd += last;
+  });
+  if (debtStart > debtEnd) {
+    push({ id: `annual-debt-${year}`, type: 'positive', category: 'debt', priority: 2, title: `Debt reduced by ${formatCurrency(debtStart - debtEnd)} in ${year}`, description: `From ${formatCurrency(debtStart)} down to ${formatCurrency(debtEnd)}. Check the simulator for faster payoff options.` });
+  } else if (debtEnd > 0) {
+    push({ id: `annual-debt-${year}`, type: 'suggestion', category: 'debt', priority: 2, title: `${formatCurrency(debtEnd)} of debt outstanding`, description: 'No reduction recorded this year. Visit the Debt tab to plan an accelerated payoff.' });
+  }
+  const is80C = (c: string) => ['ppf', 'elss', 'sukanya', 'fd', 'other'].includes(c);
+  let s80c = 0, sNps = 0, s80d = 0;
+  yearData.taxShieldEntries.forEach(e => {
+    const t = e.values.reduce((a, b) => a + b, 0);
+    if (e.category === 'nps') sNps += t; else if (e.category === 'insurance') s80d += t; else if (is80C(e.category)) s80c += t;
+  });
+  const taxFilled = Math.min(150000, s80c) + Math.min(50000, sNps) + Math.min(25000, s80d);
+  if (taxFilled > 0) {
+    const tp = Math.round((taxFilled / 225000) * 100);
+    push({ id: `annual-tax-${year}`, type: tp >= 80 ? 'positive' : 'reminder', category: 'savings', priority: 3, title: `Tax shield ${tp}% filled for ${year}`, description: `${formatCurrency(taxFilled)} of qualifying investments recorded across the year.` });
+  }
+  insights.sort((a, b) => a.priority - b.priority);
+  return insights;
+}
