@@ -17,6 +17,7 @@ import type { TaxEntry, WindfallResult, InterceptorStatus, NoSpendStatus, Shared
 import { formatCurrency, getStatusColor, getRemarkColor, getBurnRingColor, getBurnStatusColor, getTaxCategoryColor } from './data/budgetData';
 import type { BurnRate } from './data/budgetData';
 import { CoachInsight } from './coachEngine';
+import { parseCsvStatement, parseStatementLines, extractTextFromPdf, type ParsedTxn, type DateOrder } from './utils/statementParser';
 
 type Tab = 'overview' | 'details' | 'debt' | 'tax' | 'war' | 'sync' | 'coach';
 type EditSection = 'income' | 'household' | 'debt-repay' | 'savings' | 'debt-prog' | 'tax' | null;
@@ -660,6 +661,181 @@ function SharedDashboard({ expenses }: { expenses: SharedExpense[] }) {
   );
 }
 
+/* ── Statement Import ──────────────────────────── */
+type ImportRow = {
+  txn: ParsedTxn;
+  selected: boolean;
+  dupe: boolean;
+  yearMismatch: boolean;
+  section: 'incomeEntries' | 'householdExpenses';
+  entryId: string;
+  newName: string;
+};
+
+function suggestedRowName(desc: string): string {
+  const m = desc.match(/[A-Za-z]{3,}/);
+  return m ? m[0].toUpperCase() : 'IMPORTED';
+}
+
+function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetStore> }) {
+  const { state, currentYear, queueTransactions, confirmImportedTxn, autoAllocate } = store;
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [password, setPassword] = useState('');
+  const [dateOrder, setDateOrder] = useState<DateOrder>('dmy');
+  const [rows, setRows] = useState<ImportRow[] | null>(null);
+  const pending = currentYear?.pendingTxns || [];
+  const rules = currentYear?.importRules || [];
+
+  const buildRows = (txns: ParsedTxn[]): ImportRow[] => {
+    const processed = new Set(currentYear?.processedTxnHashes || []);
+    const activeYearNum = parseInt(state.activeYear, 10);
+    return txns.map(t => {
+      const rule = rules.find(r => t.description.toLowerCase().includes(r.match.toLowerCase()));
+      const section = rule ? rule.section : t.direction === 'credit' ? 'incomeEntries' : 'householdExpenses';
+      let entryId = rule ? rule.entryId : '';
+      const list = section === 'incomeEntries' ? (currentYear?.incomeEntries || []) : (currentYear?.householdExpenses || []);
+      if (entryId && !list.some(e => e.id === entryId)) entryId = '';
+      return { txn: t, selected: true, dupe: processed.has(t.hash), yearMismatch: t.yearHint !== activeYearNum, section, entryId, newName: entryId ? '' : suggestedRowName(t.description) };
+    });
+  };
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) e.target.value = '';
+    if (!file || !currentYear) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
+      let txns: ParsedTxn[] = [];
+      if (isPdf) {
+        const buf = await file.arrayBuffer();
+        const lines = await extractTextFromPdf(buf, password || undefined);
+        txns = parseStatementLines(lines, dateOrder).txns;
+      } else {
+        const text = await file.text();
+        txns = parseCsvStatement(text, dateOrder).txns;
+      }
+      if (txns.length === 0) {
+        setError('No transactions detected in this file. For password-protected PDFs enter the password above; you can also try switching the date order.');
+        setBusy(false);
+        return;
+      }
+      const built = buildRows(txns);
+      if (built.every(r => r.dupe)) {
+        setNotice(`All ${built.length} transactions were already imported earlier — nothing new.`);
+        setBusy(false);
+        return;
+      }
+      setRows(built);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Import failed';
+      if (msg === 'WRONG_PASSWORD') setError('Incorrect statement password — please check and try again.');
+      else if (msg === 'NEED_PASSWORD') setError('This PDF is password-protected — enter the statement password above and try again.');
+      else setError('Import failed: ' + msg);
+    }
+    setBusy(false);
+  };
+
+  const handleConfirm = () => {
+    if (!rows || !currentYear) return;
+    const chosen = rows.filter(r => r.selected && !r.dupe && !r.yearMismatch && (r.entryId || r.newName.trim()));
+    for (const r of chosen) {
+      confirmImportedTxn(r.txn, r.section, r.entryId || null, r.entryId ? null : r.newName.trim());
+      if (r.txn.direction === 'credit') autoAllocate(r.txn.monthIndex);
+    }
+    const deferred = rows.filter(r => !r.selected && !r.dupe).map(r => r.txn);
+    if (deferred.length) queueTransactions(deferred);
+    const skipped = rows.filter(r => r.selected && !r.dupe && !r.yearMismatch && !r.entryId && !r.newName.trim()).length;
+    setNotice(`${chosen.length} imported • ${rows.filter(r => r.dupe).length} duplicates skipped • ${deferred.length} kept for later${skipped ? ` • ${skipped} skipped (no category chosen)` : ''}`);
+    setRows(null);
+  };
+
+  const reviewPending = () => {
+    if (!currentYear) return;
+    setRows(buildRows(currentYear.pendingTxns));
+    setNotice(''); setError('');
+  };
+
+  return (
+    <div className="glass-card rounded-2xl p-4 ios-shadow card-hover">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-bold text-ios-text tracking-tight">Import Statement</span>
+        {pending.length > 0 && (
+          <button onClick={reviewPending} className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-ios-orange/15 text-ios-orange">
+            {pending.length} pending — review
+          </button>
+        )}
+      </div>
+      <p className="text-[10px] text-ios-text-secondary mb-3 leading-relaxed">
+        Import a bank statement (PDF or CSV) from any bank or country. Transactions are parsed on-device, shown for your review, and only recorded after you confirm.
+      </p>
+      <input ref={fileRef} type="file" accept=".pdf,.csv,.txt,text/csv,application/pdf" className="hidden" onChange={handleFile} />
+      <div className="flex items-center gap-2">
+        <motion.button whileTap={{ scale: 0.95 }} disabled={busy} onClick={() => fileRef.current?.click()}
+          className="flex-1 py-2.5 rounded-xl bg-ios-blue/15 text-xs font-bold text-ios-blue flex items-center justify-center gap-1.5 disabled:opacity-50">
+          <Plus size={13} /> {busy ? 'Parsing…' : 'Choose statement file'}
+        </motion.button>
+        <button onClick={() => setDateOrder(dateOrder === 'dmy' ? 'mdy' : 'dmy')}
+          className="px-3 py-2.5 rounded-xl bg-ios-surface-2 text-[10px] font-bold text-ios-text-secondary uppercase">
+          {dateOrder}
+        </button>
+      </div>
+      <input type="text" value={password} onChange={e => setPassword(e.target.value)} placeholder="Statement password (only for protected PDFs)"
+        className="w-full mt-2 bg-ios-surface-2 rounded-xl px-3 py-2 text-[11px] text-ios-text border border-ios-border/30 outline-none" />
+      {error && <div className="mt-2 text-[10px] text-ios-red font-medium">{error}</div>}
+      {notice && <div className="mt-2 text-[10px] text-ios-green font-medium">{notice}</div>}
+
+      <BottomSheet isOpen={!!rows} onClose={() => setRows(null)} title="Review imported transactions">
+        {rows && (
+          <>
+            <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+              {rows.map((r, i) => (
+                <div key={r.txn.hash + i} className={`p-2.5 rounded-xl border ${r.dupe || r.yearMismatch ? 'opacity-50 border-ios-border/10' : 'border-ios-border/20'} bg-ios-surface-2`}>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setRows(rows.map((x, j) => j === i ? { ...x, selected: !x.selected } : x))}
+                      className={`w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold ${r.selected ? 'bg-ios-blue text-white' : 'bg-ios-surface text-ios-text-secondary border border-ios-border/30'}`}>
+                      {r.selected ? '✓' : ''}
+                    </button>
+                    <button onClick={() => setRows(rows.map((x, j) => j === i ? { ...x, txn: { ...x.txn, direction: x.txn.direction === 'credit' ? 'debit' : 'credit' } } : x))}
+                      className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold ${r.txn.direction === 'credit' ? 'bg-ios-green/15 text-ios-green' : 'bg-ios-red/15 text-ios-red'}`}>
+                      {r.txn.direction === 'credit' ? 'CR' : 'DR'}
+                    </button>
+                    <span className="text-[11px] font-bold text-ios-text tabular-nums">{formatCurrency(r.txn.amount)}</span>
+                    <span className="text-[9px] text-ios-text-secondary ml-auto">{r.txn.dateISO}</span>
+                  </div>
+                  <div className="text-[10px] text-ios-text-secondary truncate mt-1">{r.txn.description}</div>
+                  {!r.dupe && !r.yearMismatch && (
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <select value={r.entryId} onChange={e => setRows(rows.map((x, j) => j === i ? { ...x, entryId: e.target.value, newName: e.target.value ? '' : x.newName } : x))}
+                        className="flex-1 bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none">
+                        <option value="">＋ New row…</option>
+                        {(r.section === 'incomeEntries' ? currentYear.incomeEntries : currentYear.householdExpenses).map(en => (
+                          <option key={en.id} value={en.id}>{en.name}</option>
+                        ))}
+                      </select>
+                      {!r.entryId && (
+                        <input value={r.newName} onChange={e => setRows(rows.map((x, j) => j === i ? { ...x, newName: e.target.value } : x))}
+                          placeholder="New row name" className="flex-1 bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none" />
+                      )}
+                    </div>
+                  )}
+                  {r.dupe && <div className="text-[9px] text-ios-text-secondary mt-1">Already imported earlier</div>}
+                  {r.yearMismatch && <div className="text-[9px] text-ios-orange mt-1">Dated {r.txn.yearHint} — switch to that year to import</div>}
+                </div>
+              ))}
+            </div>
+            <button onClick={handleConfirm} className="w-full mt-3 py-2.5 rounded-xl bg-ios-green/15 text-xs font-bold text-ios-green">
+              Confirm selected ({rows.filter(r => r.selected && !r.dupe && !r.yearMismatch && (r.entryId || r.newName.trim())).length})
+            </button>
+          </>
+        )}
+      </BottomSheet>
+    </div>
+  );
+}
 /* ─── Main App ────────────────────────────────────────────── */
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
@@ -1577,6 +1753,7 @@ export default function App() {
 
           {activeTab === 'sync' && (
             <motion.div key="sync" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.3 }} className="space-y-3 stagger-children">
+              <StatementImportSection store={store} />
               <NoSpendChallengeCard status={noSpendStatus} onCheckIn={() => { updateNoSpendStreak(); }} />
               {currentYear.familySync.enabled && (
                 <SharedDashboard expenses={currentYear.familySync.sharedExpenses} />
