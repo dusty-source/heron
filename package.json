@@ -12,14 +12,15 @@
     "ios": "npm run build && cap sync ios && cap open ios"
   },
   "dependencies": {
+    "@capacitor/cli": "^6.0.0",
     "@capacitor/core": "^6.0.0",
     "@capacitor/ios": "^6.0.0",
-    "@capacitor/cli": "^6.0.0",
     "@capacitor/preferences": "^6.0.0",
     "@capacitor/status-bar": "^6.0.0",
     "@tailwindcss/vite": "^4.3.3",
     "framer-motion": "^13.1.0",
     "lucide-react": "^1.31.0",
+    "pdfjs-dist": "^4.8.69",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^3.10.1",
