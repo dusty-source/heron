@@ -16,7 +16,7 @@ import { useBudgetStore } from './store/useBudgetStore';
 import type { TaxEntry, WindfallResult, InterceptorStatus, NoSpendStatus, SharedExpense } from './store/useBudgetStore';
 import { formatCurrency, getStatusColor, getRemarkColor, getBurnRingColor, getBurnStatusColor, getTaxCategoryColor } from './data/budgetData';
 import type { BurnRate } from './data/budgetData';
-import { CoachInsight } from './coachEngine';
+import { CoachInsight, generateAnnualInsights, defaultCoachSettings } from './coachEngine';
 import { parseCsvStatement, parseStatementLines, extractTextFromPdf, type ParsedTxn, type DateOrder } from './utils/statementParser';
 
 type Tab = 'overview' | 'details' | 'debt' | 'tax' | 'war' | 'sync' | 'coach';
@@ -343,7 +343,7 @@ function DebtSimulatorCard({ store }: { store: ReturnType<typeof useBudgetStore>
   const [strategy, setStrategy] = useState<'snowball' | 'avalanche'>('avalanche');
   const [extraMonthly, setExtraMonthly] = useState(5000);
   const [selectedDebtExtra, setSelectedDebtExtra] = useState<string>('vehicle');
-  const { currentYear, getCurrentDebtBalance, getDebtMonthsRemaining, calculateDebtPayoff, calculateExtraPaymentImpact, updateDebtMeta } = store;
+  const { currentYear, getCurrentDebtBalance, getDebtMonthsRemaining, calculateDebtPayoff, calculateExtraPaymentImpact, updateDebtMeta, syncDebtEmiToOutflows } = store;
   const payoff = useMemo(() => calculateDebtPayoff(strategy, extraMonthly), [calculateDebtPayoff, strategy, extraMonthly]);
   const extraImpact = useMemo(() => calculateExtraPaymentImpact(selectedDebtExtra, extraMonthly), [calculateExtraPaymentImpact, selectedDebtExtra, extraMonthly]);
   if (!currentYear) return null;
@@ -360,7 +360,7 @@ function DebtSimulatorCard({ store }: { store: ReturnType<typeof useBudgetStore>
                 <div className="w-8 h-8 rounded-xl flex items-center justify-center bg-ios-blue/20 text-ios-blue"><CreditCard size={14} /></div>
                 <span className="text-xs font-bold text-ios-text tracking-wide">{meta.name}</span>
               </div>
-              <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-ios-surface-2 text-ios-text-secondary">{Number.isFinite(monthsLeft) ? `${monthsLeft} payments left` : 'EMI below interest'}</span>
+              <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-ios-surface-2 text-ios-text-secondary">{Number.isFinite(monthsLeft) ? (meta.emiAmount > 0 ? `${monthsLeft} payments left` : 'Set up this loan') : 'EMI below interest'}</span>
             </div>
             <div className="grid grid-cols-2 gap-2 mb-2">
               <div>
@@ -369,7 +369,8 @@ function DebtSimulatorCard({ store }: { store: ReturnType<typeof useBudgetStore>
               </div>
               <div>
                 <div className="text-[10px] text-ios-text-secondary font-medium">EMI</div>
-                <div className="text-xs font-bold text-ios-text tabular-nums">{formatCurrency(meta.emiAmount)}</div>
+                <input type="number" value={meta.emiAmount} onChange={e => updateDebtMeta(meta.debtId, { emiAmount: Number(e.target.value) || 0 })}
+                  className="w-20 bg-ios-surface-2 rounded-lg px-2 py-0.5 text-xs font-bold text-ios-text text-right border border-ios-border/30 focus:border-ios-blue outline-none tabular-nums" />
               </div>
             </div>
             <div className="mb-2">
@@ -381,12 +382,20 @@ function DebtSimulatorCard({ store }: { store: ReturnType<typeof useBudgetStore>
                 <motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} transition={{ duration: 0.8 }} className="h-full rounded-full bg-ios-blue" />
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 mb-2">
               <span className="text-[10px] text-ios-text-secondary font-medium">Rate</span>
               <input type="number" value={meta.interestRate}
                 onChange={e => updateDebtMeta(meta.debtId, { interestRate: Number(e.target.value) || 0 })}
                 className="w-16 bg-ios-surface-2 rounded-lg px-2 py-1 text-[10px] text-ios-text text-right border border-ios-border/30 focus:border-ios-blue outline-none tabular-nums" />
               <span className="text-[10px] text-ios-text-secondary font-medium">%</span>
+              <span className="text-[10px] text-ios-text-secondary font-medium ml-1">Principal</span>
+              <input type="number" value={meta.originalPrincipal}
+                onChange={e => updateDebtMeta(meta.debtId, { originalPrincipal: Number(e.target.value) || 0 })}
+                className="w-24 bg-ios-surface-2 rounded-lg px-2 py-1 text-[10px] text-ios-text text-right border border-ios-border/30 focus:border-ios-blue outline-none tabular-nums" />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] text-ios-text-secondary">Since {currentYear.months[meta.startMonthIndex] || '—'} {currentYear.year}</span>
+              <button onClick={() => syncDebtEmiToOutflows(meta.debtId)} className="text-[9px] font-bold px-2 py-1 rounded-lg bg-ios-purple/15 text-ios-purple">Sync EMI to outflows</button>
             </div>
           </motion.div>
         );
@@ -667,7 +676,7 @@ type ImportRow = {
   selected: boolean;
   dupe: boolean;
   yearMismatch: boolean;
-  section: 'incomeEntries' | 'householdExpenses';
+  section: 'incomeEntries' | 'householdExpenses' | 'savingsData' | 'debtRepayment';
   entryId: string;
   newName: string;
 };
@@ -748,6 +757,7 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
     }
     const deferred = rows.filter(r => !r.selected && !r.dupe).map(r => r.txn);
     if (deferred.length) queueTransactions(deferred);
+    generateCoachInsights(selectedMonth);
     const skipped = rows.filter(r => r.selected && !r.dupe && !r.yearMismatch && !r.entryId && !r.newName.trim()).length;
     setNotice(`${chosen.length} imported • ${rows.filter(r => r.dupe).length} duplicates skipped • ${deferred.length} kept for later${skipped ? ` • ${skipped} skipped (no category chosen)` : ''}`);
     setRows(null);
@@ -809,10 +819,17 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
                   <div className="text-[10px] text-ios-text-secondary truncate mt-1">{r.txn.description}</div>
                   {!r.dupe && !r.yearMismatch && (
                     <div className="flex items-center gap-1.5 mt-1.5">
+                      <select value={r.section} onChange={e => setRows(rows.map((x, j) => j === i ? { ...x, section: e.target.value as ImportRow['section'], entryId: '', newName: suggestedRowName(x.txn.description) } : x))}
+                        className='w-full bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none mb-1'>
+                        <option value="incomeEntries">→ Incoming (income)</option>
+                        <option value="householdExpenses">→ Expense (household)</option>
+                        <option value="savingsData">→ Savings</option>
+                        <option value="debtRepayment">→ Debt Repayment (EMI)</option>
+                      </select>
                       <select value={r.entryId} onChange={e => setRows(rows.map((x, j) => j === i ? { ...x, entryId: e.target.value, newName: e.target.value ? '' : x.newName } : x))}
-                        className="flex-1 bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none">
+                        className='flex-1 bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none'>
                         <option value="">＋ New row…</option>
-                        {(r.section === 'incomeEntries' ? currentYear.incomeEntries : currentYear.householdExpenses).map(en => (
+                        {(r.section === 'incomeEntries' ? currentYear.incomeEntries : r.section === 'savingsData' ? currentYear.savingsData : r.section === 'debtRepayment' ? currentYear.debtRepayment : currentYear.householdExpenses).map(en => (
                           <option key={en.id} value={en.id}>{en.name}</option>
                         ))}
                       </select>
@@ -867,6 +884,13 @@ export default function App() {
   const [partnerNameInput, setPartnerNameInput] = useState('');
   const [addSheetOpen, setAddSheetOpen] = useState(false);
   const [addSheetSection, setAddSheetSection] = useState<keyof YearData | null>(null);
+  const [showAddDebt, setShowAddDebt] = useState(false);
+  const [adName, setAdName] = useState('');
+  const [adBalance, setAdBalance] = useState('');
+  const [adPrincipal, setAdPrincipal] = useState('');
+  const [adRate, setAdRate] = useState('');
+  const [adEmi, setAdEmi] = useState('');
+  const [adEmiOutflows, setAdEmiOutflows] = useState(true);
   
 
   const store = useBudgetStore();
@@ -880,7 +904,7 @@ export default function App() {
     getDisasterStreak, getRecoveryStreak, getInterceptorStatus, getYearComparison,
     getDebtReductionVelocity, getSavingsAccumulation, enableFamilySync, disableFamilySync,
     addSharedExpense, updateNoSpendStreak, getNoSpendStatus,
-    generateSyncPayload, applySyncPayload, exportToCSV, exportToJSON, importFromJSON, generatePDFReport, generateCoachInsights, dismissCoachInsight, updateCoachSettings } = store;
+    generateSyncPayload, applySyncPayload, exportToCSV, exportToJSON, importFromJSON, generatePDFReport, generateAnnualPDFReport, generateCoachInsights, dismissCoachInsight, updateCoachSettings, addDebt, syncDebtEmiToOutflows } = store;
 
   const months = currentYear?.months || [];
   const currentMonth = months[selectedMonth] || '';
@@ -966,6 +990,8 @@ export default function App() {
   }, [selectedMonth, state.activeYear, detectWindfall]);
 
   const [coachFilter, setCoachFilter] = useState<'all' | 'alert' | 'warning' | 'suggestion' | 'reminder' | 'positive'>('all');
+  const [coachScope, setCoachScope] = useState<'monthly' | 'annual'>('monthly');
+  const annualInsights = useMemo(() => (currentYear ? generateAnnualInsights(currentYear, currentYear.coachSettings || defaultCoachSettings) : []), [currentYear]);
   useEffect(() => {
   // Regenerate insights only when the month or year changes (or on manual
   // refresh). NOTE: we deliberately do NOT depend on `currentYear?.modifiedAt`;
@@ -1062,6 +1088,12 @@ export default function App() {
     if (win) { win.document.write(html); win.document.close(); }
   };
 
+  const handleOpenAnnualPDF = () => {
+    const html = generateAnnualPDFReport();
+    const win = window.open('', '_blank');
+    if (win) { win.document.write(html); win.document.close(); }
+  };
+
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1083,6 +1115,14 @@ export default function App() {
     if (!addSheetSection) return;
     handleAddEntry(addSheetSection);
     setAddSheetOpen(false);
+  };
+
+  const handleAddDebt = () => {
+    const bal = Number(adBalance) || 0;
+    if (!adName.trim() || bal <= 0) return;
+    addDebt(adName.trim(), { balance: bal, principal: Number(adPrincipal) || 0, rate: Number(adRate) || 0, emi: Number(adEmi) || 0, startMonthIndex: new Date().getMonth() }, adEmiOutflows);
+    setShowAddDebt(false);
+    setAdName(''); setAdBalance(''); setAdPrincipal(''); setAdRate(''); setAdEmi('');
   };
 
   const SectionHeader = ({ title, section, onAdd, locked }: { title: string; section: EditSection; onAdd?: () => void; locked?: boolean }) => (
@@ -1516,7 +1556,7 @@ export default function App() {
             <motion.div key="debt" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.3 }} className="space-y-3 stagger-children">
               <DebtSimulatorCard store={store} />
               <div className="glass-card rounded-2xl p-4 ios-shadow card-hover">
-                <SectionHeader title="Debt Progression" section="debt-prog" onAdd={() => openAddSheet('debtProgression')} />
+                <SectionHeader title="Debt Progression" section="debt-prog" onAdd={() => setShowAddDebt(true)} />
                 <div className="space-y-1">
                   {currentYear.debtProgression.map(entry => (
                     <EditableRow key={entry.id} name={entry.name} value={entry.values[selectedMonth]}
@@ -1803,7 +1843,7 @@ export default function App() {
                     className="py-3 rounded-xl bg-ios-surface-2 flex flex-col items-center gap-1.5 export-grid-item">
                     <FileText size={18} className="text-ios-blue" />
                     <span className="text-[10px] font-bold text-ios-text">PDF Report</span>
-                  </motion.button>
+                  </motion.button>                  <motion.button whileTap={{ scale: 0.95 }} onClick={handleOpenAnnualPDF}                    className="py-3 rounded-xl bg-ios-surface-2 flex flex-col items-center gap-1.5 export-grid-item">                    <FileText size={18} className="text-ios-purple" />                    <span className="text-[10px] font-bold text-ios-text">Annual PDF</span>                  </motion.button>
                   <motion.button whileTap={{ scale: 0.95 }} onClick={handleDownloadJSON}
                     className="py-3 rounded-xl bg-ios-surface-2 flex flex-col items-center gap-1.5 export-grid-item">
                     <Share2 size={18} className="text-ios-purple" />
@@ -1832,7 +1872,7 @@ export default function App() {
   <motion.div key="coach" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.3 }} className="space-y-3 stagger-children">
     {/* Coach feed */}
     <div className="flex items-center justify-between mb-3">
-      <h2 className="text-sm font-bold text-ios-text tracking-tight">Your Financial Coach</h2>
+      <h2 className="text-sm font-bold text-ios-text tracking-tight">Your Financial Coach</h2>      <div className="flex gap-1.5 mt-2 mb-1">        {(['monthly', 'annual'] as const).map(s => (          <button key={s} onClick={() => setCoachScope(s)} className={`px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase ${coachScope === s ? 'bg-ios-blue text-white' : 'bg-ios-surface-2 text-ios-text-secondary'}`}>{s}</button>        ))}      </div>
       <div className="flex gap-2">
         <select
           value={coachFilter}
@@ -1854,7 +1894,31 @@ export default function App() {
         </button>
       </div>
     </div>
-    {currentYear?.coachInsights.filter(ins => !ins.isDismissed && (coachFilter === 'all' || ins.type === coachFilter)).length === 0 ? (
+    {coachScope === 'annual' && (
+      <>
+        <div className='grid grid-cols-4 gap-1.5'>
+          {months.map((m, i) => {
+            const inc = getIncomeTotal(i); const out = getOutgoingTotal(i);
+            return (
+              <button key={m} onClick={() => { setSelectedMonth(i); setCoachScope('monthly'); }} className={`p-2 rounded-xl text-left ${selectedMonth === i ? 'bg-ios-blue/15' : 'bg-ios-surface-2'}`}>
+                <div className='text-[8px] text-ios-text-secondary font-bold uppercase truncate'>{m.slice(0, 3)}</div>
+                <div className='text-[9px] text-ios-green font-bold tabular-nums'>{inc > 0 ? formatCurrency(inc) : '—'}</div>
+                <div className='text-[9px] text-ios-red font-bold tabular-nums'>{out > 0 ? formatCurrency(out) : '—'}</div>
+              </button>
+            );
+          })}
+        </div>
+        <div className='space-y-3'>
+          {annualInsights.map(ins => (
+            <div key={ins.id} className={`glass-card rounded-2xl p-4 ios-shadow border-l-4 ${ins.type === 'positive' ? 'border-ios-green/30 bg-ios-green/10' : ins.type === 'warning' ? 'border-ios-orange/30 bg-ios-orange/10' : ins.type === 'alert' ? 'border-ios-red/30 bg-ios-red/10' : 'border-ios-blue/30 bg-ios-blue/10'}`}>
+              <h4 className='text-sm font-bold text-ios-text'>{ins.title}</h4>
+              <p className='text-xs text-ios-text-secondary mt-1 leading-relaxed'>{ins.description}</p>
+            </div>
+          ))}
+        </div>
+      </>
+    )}
+    {coachScope === 'monthly' && currentYear?.coachInsights.filter(ins => !ins.isDismissed && (coachFilter === 'all' || ins.type === coachFilter)).length === 0 ? (
       <div className="glass-card rounded-2xl p-8 ios-shadow text-center">
         <Lightbulb size={32} className="text-ios-text-secondary mx-auto mb-3 opacity-50" />
         <p className="text-xs text-ios-text-secondary leading-relaxed">No insights right now. Keep up the good work!</p>
@@ -1984,6 +2048,24 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Add Debt Sheet */}
+      <BottomSheet isOpen={showAddDebt} onClose={() => setShowAddDebt(false)} title="Add Debt">
+        <div className="space-y-2">
+          <input value={adName} onChange={e => setAdName(e.target.value)} placeholder="Debt name (e.g., VEHICLE)" className="w-full bg-ios-surface-2 rounded-xl px-3 py-2 text-xs text-ios-text border border-ios-border/30 outline-none" />
+          <input type="number" value={adBalance} onChange={e => setAdBalance(e.target.value)} placeholder="Current outstanding balance" className="w-full bg-ios-surface-2 rounded-xl px-3 py-2 text-xs text-ios-text border border-ios-border/30 outline-none" />
+          <input type="number" value={adPrincipal} onChange={e => setAdPrincipal(e.target.value)} placeholder="Original principal (optional)" className="w-full bg-ios-surface-2 rounded-xl px-3 py-2 text-xs text-ios-text border border-ios-border/30 outline-none" />
+          <div className="grid grid-cols-2 gap-2">
+            <input type="number" value={adRate} onChange={e => setAdRate(e.target.value)} placeholder="Interest rate %" className="w-full bg-ios-surface-2 rounded-xl px-3 py-2 text-xs text-ios-text border border-ios-border/30 outline-none" />
+            <input type="number" value={adEmi} onChange={e => setAdEmi(e.target.value)} placeholder="Monthly EMI" className="w-full bg-ios-surface-2 rounded-xl px-3 py-2 text-xs text-ios-text border border-ios-border/30 outline-none" />
+          </div>
+          <label className="flex items-center gap-2 text-[11px] text-ios-text-secondary pt-1">
+            <input type="checkbox" checked={adEmiOutflows} onChange={e => setAdEmiOutflows(e.target.checked)} />
+            Add EMI to monthly outflows (Debt Repayment) from this month
+          </label>
+        </div>
+        <button onClick={handleAddDebt} className="w-full mt-3 py-2.5 rounded-xl bg-ios-blue text-xs font-bold text-white ios-shadow-sm">Add Debt</button>
+      </BottomSheet>
 
       {/* First-run Setup Choice Modal */}
       <AnimatePresence>
