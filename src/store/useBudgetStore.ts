@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect, useCallback } from 'react';
 
-import { generateInsights, CoachInsight, CoachSettings, defaultCoachSettings } from '../coachEngine';
+import { generateInsights, generateAnnualInsights, CoachInsight, CoachSettings, defaultCoachSettings } from '../coachEngine';
+import { svgGroupedBars, svgLineChart } from '../utils/reportCharts';
 
 export interface DataEntry {
   id: string;
@@ -44,7 +45,7 @@ export interface TaxEntry {
 
 export interface ImportRule {
   match: string; // case-insensitive substring of the transaction description
-  section: 'incomeEntries' | 'householdExpenses';
+  section: 'incomeEntries' | 'householdExpenses' | 'savingsData' | 'debtRepayment';
   entryId: string;
 }
 
@@ -562,7 +563,7 @@ export function useBudgetStore() {
     });
   }, []);
 
-  const confirmImportedTxn = useCallback((txn: ParsedTxn, section: 'incomeEntries' | 'householdExpenses', entryId: string | null, newName: string | null) => {
+  const confirmImportedTxn = useCallback((txn: ParsedTxn, section: 'incomeEntries' | 'householdExpenses' | 'savingsData' | 'debtRepayment', entryId: string | null, newName: string | null) => {
     setState(prev => {
       const y = prev.years[prev.activeYear];
       if (!y) return prev;
@@ -599,7 +600,7 @@ export function useBudgetStore() {
     });
   }, []);
 
-  const addImportRule = useCallback((match: string, section: 'incomeEntries' | 'householdExpenses', entryId: string) => {
+  const addImportRule = useCallback((match: string, section: 'incomeEntries' | 'householdExpenses' | 'savingsData' | 'debtRepayment', entryId: string) => {
     setState(prev => {
       const y = prev.years[prev.activeYear];
       if (!y || !match.trim()) return prev;
@@ -615,6 +616,63 @@ export function useBudgetStore() {
       const y = prev.years[prev.activeYear];
       if (!y) return prev;
       const updated = { ...y, importRules: y.importRules.filter(r => r.match !== match), modifiedAt: now() };
+      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+    });
+  }, []);
+
+  // One-step guided debt creation: progression row (with current balance),
+  // debtMeta (rate/EMI/principal) and optionally a matching EMI outflow row.
+  const addDebt = useCallback((name: string, opts: { balance: number; principal: number; rate: number; emi: number; startMonthIndex: number }, addEmiToOutflows: boolean) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y || !name.trim()) return prev;
+      const ts = now();
+      const clean = name.trim().toUpperCase();
+      const pid = `${clean.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+      const activeYearNum = parseInt(prev.activeYear, 10);
+      const monthIdx = activeYearNum === new Date().getFullYear() ? new Date().getMonth() : 0;
+      const values = new Array(12).fill(0);
+      values[monthIdx] = Math.max(0, opts.balance);
+      const progression = [...y.debtProgression, { id: pid, name: clean, values, recurring: 'none' as const, createdAt: ts, modifiedAt: ts }];
+      const meta = [...y.debtMeta, { debtId: pid, name: clean, interestRate: opts.rate, emiAmount: opts.emi, originalPrincipal: opts.principal > 0 ? opts.principal : opts.balance, startMonthIndex: opts.startMonthIndex }];
+      let repayment = [...y.debtRepayment];
+      if (addEmiToOutflows && opts.emi > 0) {
+        const emiValues = new Array(12).fill(0);
+        for (let m = monthIdx; m < 12; m++) emiValues[m] = opts.emi;
+        repayment = [...repayment, { id: `${pid}-emi`, name: `${clean} EMI`, values: emiValues, recurring: 'monthly' as const, createdAt: ts, modifiedAt: ts }];
+      }
+      const updated = { ...y, debtProgression: progression, debtMeta: meta, debtRepayment: repayment, modifiedAt: ts };
+      const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+      const auditY = newState.years[newState.activeYear];
+      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'add', section: 'debt', entryName: clean, newValue: `balance ${opts.balance} @ ${opts.rate}% EMI ${opts.emi}`, timestamp: ts };
+      auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
+      return newState;
+    });
+  }, []);
+
+  // Push the current debtMeta EMI into the matching Debt Repayment row
+  // (created if missing) for the current month onward. Months the user has
+  // manually edited to a different amount are left untouched.
+  const syncDebtEmiToOutflows = useCallback((debtId: string) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y) return prev;
+      const meta = y.debtMeta.find(m => m.debtId === debtId);
+      if (!meta || meta.emiAmount <= 0) return prev;
+      const ts = now();
+      const monthIdx = new Date().getMonth();
+      const repayment = [...y.debtRepayment.map(e => ({ ...e, values: [...e.values] }))];
+      const targetName = `${meta.name} EMI`;
+      let idx = repayment.findIndex(e => e.name === targetName);
+      if (idx === -1) {
+        repayment.push({ id: `${debtId}-emi-${Date.now()}`, name: targetName, values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts });
+        idx = repayment.length - 1;
+      }
+      for (let m = monthIdx; m < 12; m++) {
+        if (repayment[idx].values[m] === 0 || repayment[idx].values[m] === meta.emiAmount) repayment[idx].values[m] = meta.emiAmount;
+      }
+      repayment[idx] = { ...repayment[idx], modifiedAt: ts };
+      const updated = { ...y, debtRepayment: repayment, modifiedAt: ts };
       return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
     });
   }, []);
@@ -1174,56 +1232,139 @@ const importFromJSON = useCallback((json: string) => {
   } catch { /* ignore */ }
 }, []);
 
-const generatePDFReport = useCallback((monthIndex: number): string => {
+﻿const generatePDFReport = useCallback((monthIndex: number): string => {
   const y = currentYear;
   if (!y) return '';
-  const income = y.incomeEntries.reduce((s, e) => s + (e.values[monthIndex] || 0), 0);
-  const household = y.householdExpenses.reduce((s, e) => s + (e.values[monthIndex] || 0), 0);
-  const debt = y.debtRepayment.reduce((s, e) => s + (e.values[monthIndex] || 0), 0);
-  const savings = y.savingsData.reduce((s, e) => s + (e.values[monthIndex] || 0), 0);
+  const fmt = (v: number) => v.toLocaleString('en-IN');
+  const sum = (arr: DataEntry[], m: number) => arr.reduce((sm, e) => sm + (e.values[m] || 0), 0);
+  const income = sum(y.incomeEntries, monthIndex);
+  const household = sum(y.householdExpenses, monthIndex);
+  const debt = sum(y.debtRepayment, monthIndex);
+  const savings = sum(y.savingsData, monthIndex);
+  const cap = y.allocationEntries.find(e => e.id === 'house70')?.values[monthIndex] || 0;
+  const capPct = cap > 0 ? Math.min(100, Math.round((household / cap) * 100)) : 0;
+  const tax = getTaxShieldStatus(monthIndex);
+  const insights = (y.coachInsights || []).filter(i => !i.isDismissed).slice(0, 6);
+  const chart = svgGroupedBars(y.months.map((_, m) => ({ label: y.months[m].slice(0, 3), values: [sum(y.incomeEntries, m), sum(y.householdExpenses, m) + sum(y.debtRepayment, m) + sum(y.savingsData, m)] })), [{ name: 'In', color: '#30d158' }, { name: 'Out', color: '#ff453a' }]);
+  const remark = y.remarks.house70?.[String(monthIndex)] || 'N/A';
   const html = `
 <!DOCTYPE html>
-<html>
-<head>
-  <title>Babylonian Heron - ${y.months[monthIndex]} ${y.year}</title>
-  <style>
-    body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 40px auto; color: #333; }
-    h1 { font-size: 24px; border-bottom: 2px solid #0a84ff; padding-bottom: 10px; }
-    .summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin: 20px 0; }
-    .card { background: #f5f5f7; padding: 16px; border-radius: 12px; }
-    .card-label { font-size: 12px; color: #666; text-transform: uppercase; }
-    .card-value { font-size: 20px; font-weight: 700; margin-top: 4px; }
-    .green { color: #30d158; } .red { color: #ff453a; } .blue { color: #0a84ff; }
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-    th { text-align: left; padding: 10px; background: #1c1c1e; color: #fff; font-size: 12px; }
-    td { padding: 10px; border-bottom: 1px solid #eee; font-size: 13px; }
-    .footer { margin-top: 40px; font-size: 11px; color: #999; text-align: center; }
-  </style>
-</head>
-<body>
-  <h1>Babylonian Heron â€” ${y.months[monthIndex]} ${y.year}</h1>
-  <div class="summary">
-    <div class="card"><div class="card-label">Total Income</div><div class="card-value green">â‚¹${income.toLocaleString('en-IN')}</div></div>
-    <div class="card"><div class="card-label">Household</div><div class="card-value red">â‚¹${household.toLocaleString('en-IN')}</div></div>
-    <div class="card"><div class="card-label">Debt Repayment</div><div class="card-value blue">â‚¹${debt.toLocaleString('en-IN')}</div></div>
-    <div class="card"><div class="card-label">Savings</div><div class="card-value green">â‚¹${savings.toLocaleString('en-IN')}</div></div>
-  </div>
-  <h2>Household Expenses</h2>
-  <table>
-    <thead><tr><th>Expense</th><th>Amount</th><th>% of Household</th></tr></thead>
-    <tbody>
-      ${y.householdExpenses.filter(e => e.values[monthIndex] > 0).map(e => {
-        const pct = household > 0 ? Math.round((e.values[monthIndex] / household) * 100) : 0;
-        return `<tr><td>${e.name}</td><td>â‚¹${e.values[monthIndex].toLocaleString('en-IN')}</td><td>${pct}%</td></tr>`;
-      }).join('')}
-    </tbody>
-  </table>
-  <div class="footer">Generated by Babylonian Heron â€¢ ${new Date().toLocaleDateString('en-IN')}</div>
-</body>
-</html>`;
+<html><head><title>Heron Monthly Report - ${y.months[monthIndex]} ${y.year}</title><style>
+body { font-family: -apple-system, sans-serif; max-width: 820px; margin: 32px auto; color: #333; }
+h1 { font-size: 22px; border-bottom: 2px solid #0a84ff; padding-bottom: 8px; } h2 { font-size: 16px; margin-top: 24px; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0; }
+.card { background: #f5f5f7; padding: 12px; border-radius: 10px; }
+.card-label { font-size: 10px; color: #666; text-transform: uppercase; }
+.card-value { font-size: 17px; font-weight: 700; margin-top: 2px; }
+.green { color: #30d158; } .red { color: #ff453a; } .blue { color: #0a84ff; } .orange { color: #ff9f0a; }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+th { text-align: left; padding: 8px; background: #1c1c1e; color: #fff; font-size: 11px; }
+td { padding: 7px; border-bottom: 1px solid #eee; font-size: 12px; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 10px; font-weight: 700; background: #eef; border: 1px solid #ccd; }
+.insight { background: #f5f5f7; border-left: 4px solid #0a84ff; padding: 8px 12px; margin: 8px 0; font-size: 12px; }
+.footer { margin-top: 32px; font-size: 10px; color: #999; text-align: center; }
+</style></head><body>
+<h1>Heron Monthly Report \u2014 ${y.months[monthIndex]} ${y.year}</h1>
+<div class="cards">
+<div class="card"><div class="card-label">Total Income</div><div class="card-value green">\u20b9${fmt(income)}</div></div>
+<div class="card"><div class="card-label">Household</div><div class="card-value red">\u20b9${fmt(household)}</div></div>
+<div class="card"><div class="card-label">Debt Repayment</div><div class="card-value blue">\u20b9${fmt(debt)}</div></div>
+<div class="card"><div class="card-label">Savings</div><div class="card-value green">\u20b9${fmt(savings)}</div></div>
+<div class="card"><div class="card-label">Net Flow</div><div class="card-value ${income - household - debt - savings >= 0 ? 'green' : 'red'}">\u20b9${fmt(income - household - debt - savings)}</div></div>
+<div class="card"><div class="card-label">Household Cap Used</div><div class="card-value ${capPct >= 85 ? 'red' : capPct >= 60 ? 'orange' : 'green'}">${capPct}% of \u20b9${fmt(cap)}</div></div>
+</div>
+<h2>12-Month Income vs Outgoing</h2>
+<div>${chart}</div>
+<h2>Status</h2>
+<p style="font-size:12px">Household: <span class="badge">${remark}</span> \u00b7 Savings: <span class="badge">${y.remarks.saving10?.[String(monthIndex)] || 'N/A'}</span> \u00b7 Debt: <span class="badge">${y.remarks.debt20?.[String(monthIndex)] || 'N/A'}</span></p>
+<h2>Tax Shield</h2>
+<p style="font-size:12px">Filled <b>\u20b9${fmt(Math.round(tax.filled))}</b> of \u20b9${fmt(tax.limit)} (${tax.pct}%) \u00b7 Gap \u20b9${fmt(Math.round(tax.gap))} \u00b7 Suggested monthly SIP \u20b9${fmt(tax.monthlySipNeeded)}</p>
+<h2>Household Expenses</h2>
+<table><thead><tr><th>Expense</th><th>Amount</th><th>% of Household</th></tr></thead><tbody>
+${y.householdExpenses.filter(e => e.values[monthIndex] > 0).map(e => `<tr><td>${e.name}</td><td>\u20b9${fmt(e.values[monthIndex])}</td><td>${household > 0 ? Math.round((e.values[monthIndex] / household) * 100) : 0}%</td></tr>`).join('')}
+</tbody></table>
+<h2>Coach Insights</h2>
+${insights.length > 0 ? insights.map(i => `<div class="insight"><b>${i.title}</b><br/>${i.description}</div>`).join('') : '<p style="font-size:12px;color:#999">No active insights for this month.</p>'}
+<div class="footer">Generated by Babylonian Heron \u00b7 ${new Date().toLocaleDateString('en-IN')}</div>
+</body></html>`;
+  return html;
+}, [currentYear, getTaxShieldStatus]);
+
+const generateAnnualPDFReport = useCallback((): string => {
+  const y = currentYear;
+  if (!y) return '';
+  const fmt = (v: number) => v.toLocaleString('en-IN');
+  const sumAll = (arr: DataEntry[]) => arr.reduce((sm, e) => sm + e.values.reduce((a, b) => a + b, 0), 0);
+  const income = sumAll(y.incomeEntries);
+  const household = sumAll(y.householdExpenses);
+  const debt = sumAll(y.debtRepayment);
+  const savings = sumAll(y.savingsData);
+  const rate = income > 0 ? Math.round(((savings + debt) / income) * 100) : 0;
+  const chart = svgGroupedBars(y.months.map((_, m) => ({ label: y.months[m].slice(0, 3), values: [sum(y.incomeEntries, m), sum(y.householdExpenses, m) + sum(y.debtRepayment, m) + sum(y.savingsData, m)] })), [{ name: 'In', color: '#30d158' }, { name: 'Out', color: '#ff453a' }]);
+  const debtPerMonth = y.months.map((_, m) => ({ label: y.months[m].slice(0, 3), value: y.debtProgression.reduce((sm, e) => sm + (e.values[m] || 0), 0) }));
+  const hasDebt = debtPerMonth.some(p => p.value > 0);
+  const debtChart = svgLineChart(debtPerMonth, '#0a84ff');
+  const is80C = (c: string) => ['ppf', 'elss', 'sukanya', 'fd', 'other'].includes(c);
+  let s80c = 0, sNps = 0, s80d = 0;
+  y.taxShieldEntries.forEach(e => {
+    const t = e.values.reduce((a, b) => a + b, 0);
+    if (e.category === 'nps') sNps += t; else if (e.category === 'insurance') s80d += t; else if (is80C(e.category)) s80c += t;
+  });
+  const taxFilled = Math.min(150000, s80c) + Math.min(50000, sNps) + Math.min(25000, s80d);
+  const taxPct = Math.round((taxFilled / 225000) * 100);
+  const annualIns = generateAnnualInsights(y, y.coachSettings || defaultCoachSettings);
+  const html = `
+<!DOCTYPE html>
+<html><head><title>Heron Annual Report - ${y.year}</title><style>
+body { font-family: -apple-system, sans-serif; max-width: 820px; margin: 32px auto; color: #333; }
+h1 { font-size: 22px; border-bottom: 2px solid #bf5af2; padding-bottom: 8px; } h2 { font-size: 16px; margin-top: 24px; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0; }
+.card { background: #f5f5f7; padding: 12px; border-radius: 10px; }
+.card-label { font-size: 10px; color: #666; text-transform: uppercase; }
+.card-value { font-size: 17px; font-weight: 700; margin-top: 2px; }
+.green { color: #30d158; } .red { color: #ff453a; } .blue { color: #0a84ff; }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+th { text-align: left; padding: 8px; background: #1c1c1e; color: #fff; font-size: 11px; }
+td { padding: 7px; border-bottom: 1px solid #eee; font-size: 12px; }
+.insight { background: #f5f5f7; border-left: 4px solid #bf5af2; padding: 8px 12px; margin: 8px 0; font-size: 12px; }
+.footer { margin-top: 32px; font-size: 10px; color: #999; text-align: center; }
+</style></head><body>
+<h1>Heron Annual Report \u2014 ${y.year}</h1>
+<div class="cards">
+<div class="card"><div class="card-label">Total Income</div><div class="card-value green">\u20b9${fmt(income)}</div></div>
+<div class="card"><div class="card-label">Household Spending</div><div class="card-value red">\u20b9${fmt(household)}</div></div>
+<div class="card"><div class="card-label">Savings Rate</div><div class="card-value blue">${rate}%</div></div>
+<div class="card"><div class="card-label">Debt Repaid</div><div class="card-value blue">\u20b9${fmt(debt)}</div></div>
+<div class="card"><div class="card-label">Saved / Invested</div><div class="card-value green">\u20b9${fmt(savings)}</div></div>
+<div class="card"><div class="card-label">Tax Shield Filled</div><div class="card-value blue">${taxPct}%</div></div>
+</div>
+<h2>Monthly Income vs Outgoing</h2>
+<div>${chart}</div>
+${hasDebt ? '<h2>Debt Balance Progression</h2><div>' + debtChart + '</div>' : ''}
+<h2>Month by Month</h2>
+<table><thead><tr><th>Month</th><th>Income</th><th>Household</th><th>Debt Paid</th><th>Savings</th><th>Net</th></tr></thead><tbody>
+${y.months.map((m, i) => {
+    const inc = sum(y.incomeEntries, i);
+    const hou = sum(y.householdExpenses, i);
+    const deb = sum(y.debtRepayment, i);
+    const sav = sum(y.savingsData, i);
+    return `<tr><td>${m}</td><td>\u20b9${fmt(inc)}</td><td>\u20b9${fmt(hou)}</td><td>\u20b9${fmt(deb)}</td><td>\u20b9${fmt(sav)}</td><td>\u20b9${fmt(inc - hou - deb - sav)}</td></tr>`;
+  }).join('')}
+</tbody></table>
+<h2>Household Breakdown (Year)</h2>
+<table><thead><tr><th>Category</th><th>Year Total</th><th>% of Spending</th></tr></thead><tbody>
+${y.householdExpenses.map(e => ({ name: e.name, total: e.values.reduce((a, b) => a + b, 0) })).filter(e => e.total > 0).sort((a, b) => b.total - a.total).map(e => `<tr><td>${e.name}</td><td>\u20b9${fmt(e.total)}</td><td>${household > 0 ? Math.round((e.total / household) * 100) : 0}%</td></tr>`).join('')}
+</tbody></table>
+<h2>Annual Coach Analysis</h2>
+${annualIns.map(i => `<div class="insight"><b>${i.title}</b><br/>${i.description}</div>`).join('')}
+<div class="footer">Generated by Babylonian Heron \u00b7 ${new Date().toLocaleDateString('en-IN')}</div>
+</body></html>`;
   return html;
 }, [currentYear]);
-  
+
+function sumAll2Month(y: YearData, m: number, section: keyof YearData): number {
+  return (y[section] as DataEntry[]).reduce((sm, e) => sm + (e.values[m] || 0), 0);
+}
   const getIncomeTotal = useCallback((monthIndex: number) => getTotal('incomeEntries', monthIndex), [getTotal]);
   
   const getOutgoingTotal = useCallback((monthIndex: number) => {
@@ -1317,6 +1458,8 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
     autoAllocate,
     autoAllocateAll,
     toggleEntryEssential,
+    addDebt,
+    syncDebtEmiToOutflows,
     queueTransactions,
     confirmImportedTxn,
     rejectProcessedTxn,
@@ -1364,6 +1507,7 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
     exportToJSON,
     importFromJSON,
     generatePDFReport,
+    generateAnnualPDFReport,
   generateCoachInsights,
   dismissCoachInsight,
   updateCoachSettings,    
