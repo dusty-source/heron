@@ -42,6 +42,12 @@ export interface TaxEntry {
   modifiedAt: string;
 }
 
+export interface ImportRule {
+  match: string; // case-insensitive substring of the transaction description
+  section: 'incomeEntries' | 'householdExpenses';
+  entryId: string;
+}
+
 export interface YearData {
   year: string;
   months: string[];
@@ -60,6 +66,9 @@ export interface YearData {
   auditLog: AuditEntry[];
   createdAt: string;
   modifiedAt: string;
+  pendingTxns: ParsedTxn[];      // statement rows awaiting user confirmation
+  processedTxnHashes: string[];  // dedupe for already-imported/ignored transactions
+  importRules: ImportRule[];     // remembered description -> row mappings
   familySync: FamilySync;
   coachInsights: CoachInsight[];
   coachSettings: CoachSettings;
@@ -203,6 +212,7 @@ const REMARK_SECTIONS: (keyof YearData)[] = ['householdExpenses', 'incomeEntries
 // â”€â”€â”€ Passcode hashing (synchronous, avoids storing plaintext) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Implementation lives in ../utils/sha256 so it can be unit-tested in isolation.
 import { hashPasscode } from '../utils/sha256';
+import type { ParsedTxn } from '../utils/statementParser';
 const PASSCODE_SALT = 'babylonian-heron::v1::';
 function saltedHash(code: string): string {
   return hashPasscode(PASSCODE_SALT + code);
@@ -240,6 +250,9 @@ function createEmptyYear(year: string): YearData {
     debtProgression: [], // user adds their own debts
     debtMeta: [], // paired debtMeta rows are created with each debt entry
     taxShieldEntries: [], // user adds their own tax instruments
+    pendingTxns: [],
+    processedTxnHashes: [],
+    importRules: [],
     familySync: { enabled: false, partnerName: '', sharedExpenses: [], noSpendStreak: 0, lastNoSpendDate: null, partnerStreak: 0 },
     windfallBaseline: 0,
     auditLog: [],
@@ -302,6 +315,9 @@ function migrateV4ToV5(state: any): BudgetState {
     if (!y.familySync) {
       y.familySync = { enabled: false, partnerName: '', sharedExpenses: [], noSpendStreak: 0, lastNoSpendDate: null, partnerStreak: 0 };
     }
+      if (!Array.isArray(y.pendingTxns)) y.pendingTxns = [];
+      if (!Array.isArray(y.processedTxnHashes)) y.processedTxnHashes = [];
+      if (!Array.isArray(y.importRules)) y.importRules = [];
   }
   return state as BudgetState;
 }
@@ -527,6 +543,78 @@ export function useBudgetStore() {
       if (idx === -1) return prev;
       entries[idx] = { ...entries[idx], essential: !entries[idx].essential, modifiedAt: now() };
       const updated = { ...y, [section]: entries, modifiedAt: now() };
+      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+    });
+  }, []);
+
+  // ── Statement import: pending queue + confirmation ──
+  const queueTransactions = useCallback((txns: ParsedTxn[]) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y) return prev;
+      const processed = new Set(y.processedTxnHashes);
+      const pendingHashes = new Set(y.pendingTxns.map(t => t.hash));
+      const fresh = txns.filter(t => !processed.has(t.hash) && !pendingHashes.has(t.hash));
+      if (fresh.length === 0) return prev;
+      const withIds = fresh.map((t, i) => ({ ...t, id: `txn-${Date.now()}-${i}` }));
+      const updated = { ...y, pendingTxns: [...y.pendingTxns, ...withIds].slice(0, 200), modifiedAt: now() };
+      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+    });
+  }, []);
+
+  const confirmImportedTxn = useCallback((txn: ParsedTxn, section: 'incomeEntries' | 'householdExpenses', entryId: string | null, newName: string | null) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y) return prev;
+      const ts = now();
+      const entries = [...(y[section] as DataEntry[])];
+      let targetId = entryId;
+      if (!targetId) {
+        targetId = `${(newName || 'imported').toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+        entries.push({ id: targetId, name: (newName || 'IMPORTED').toUpperCase(), values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts });
+      }
+      const idx = entries.findIndex(e => e.id === targetId);
+      if (idx === -1) return prev;
+      const values = [...entries[idx].values];
+      values[txn.monthIndex] = (values[txn.monthIndex] || 0) + txn.amount;
+      entries[idx] = { ...entries[idx], values, modifiedAt: ts };
+      const base = { ...y, [section]: entries, pendingTxns: y.pendingTxns.filter(t => t.hash !== txn.hash), processedTxnHashes: [txn.hash, ...y.processedTxnHashes].slice(0, 500) } as YearData;
+      const updated = { ...base, remarks: deriveRemarksForMonth(base, txn.monthIndex), modifiedAt: ts };
+      const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+      const auditY = newState.years[newState.activeYear];
+      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'add', section: String(section), entryName: entries[idx].name, newValue: `${txn.direction} ${txn.amount} (${txn.dateISO})`, timestamp: ts };
+      auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
+      return newState;
+    });
+  }, []);
+
+  const rejectProcessedTxn = useCallback((txnId: string) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y) return prev;
+      const txn = y.pendingTxns.find(t => t.id === txnId);
+      if (!txn) return prev;
+      const updated = { ...y, pendingTxns: y.pendingTxns.filter(t => t.id !== txnId), processedTxnHashes: [txn.hash, ...y.processedTxnHashes].slice(0, 500), modifiedAt: now() };
+      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+    });
+  }, []);
+
+  const addImportRule = useCallback((match: string, section: 'incomeEntries' | 'householdExpenses', entryId: string) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y || !match.trim()) return prev;
+      const key = match.trim().toLowerCase();
+      const rules = [...y.importRules.filter(r => r.match.toLowerCase() !== key), { match: match.trim(), section, entryId }];
+      const updated = { ...y, importRules: rules.slice(0, 50), modifiedAt: now() };
+      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+    });
+  }, []);
+
+  const deleteImportRule = useCallback((match: string) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y) return prev;
+      const updated = { ...y, importRules: y.importRules.filter(r => r.match !== match), modifiedAt: now() };
       return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
     });
   }, []);
@@ -1229,6 +1317,11 @@ const generatePDFReport = useCallback((monthIndex: number): string => {
     autoAllocate,
     autoAllocateAll,
     toggleEntryEssential,
+    queueTransactions,
+    confirmImportedTxn,
+    rejectProcessedTxn,
+    addImportRule,
+    deleteImportRule,
     setPasscode,
     verifyPasscode,
     getBurnRate,
