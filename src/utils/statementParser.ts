@@ -162,7 +162,7 @@ const RX = {
   date: /date|posted|value\s*dt|txn/i,
   desc: /narration|description|particulars|details|remarks|label|payee|merchant|info|transaction/i,
   credit: /credit|deposit|deposits|received|cr\b|deposit|receipt|incoming|pay[in]?|payment\s*in/i,
-  debit: /debit|withdrawal|withdrawalspaid|spent|dr\b|withdrawal|payment\s*out|outgoing|charge|expense/i,
+  debit: /debit|withdrawal|withdrawals|paid|spent|dr\b|withdrawal|payment\s*out|outgoing|charge|expense/i,
   balance: /balance|\bbal\b/i,
   ref: /ref|utr|rrn|txns?id|reference|chq|cheque|serial/i,
 };
