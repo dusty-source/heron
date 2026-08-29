@@ -169,6 +169,34 @@ const RX = {
 
 const emptyProfile = (): ColumnProfile => ({ dateIdx: -1, descIdx: -1, creditIdx: -1, debitIdx: -1, balanceIdx: -1, refIdx: -1 });
 
+/**
+ * Heuristically find the column that is most likely the balance:
+ * - Has the largest median absolute value
+ * - Values are mostly monotonic (optional)
+ * Returns the index, or -1 if not found.
+ */
+function findBalanceColumn(dataRows: string[][], numericCols: number[]): number {
+  if (numericCols.length < 2) return -1;
+  let bestIdx = -1;
+  let bestScore = -Infinity;
+  for (const idx of numericCols) {
+    const values = dataRows.map(r => parseAmount(r[idx] || '')).filter(v => v !== null && v !== 0) as number[];
+    if (values.length < 2) continue;
+    const absVals = values.map(Math.abs);
+    const median = absVals.sort((a,b) => a-b)[Math.floor(absVals.length/2)];
+    // Score: high median absolute value (balance often larger than transaction)
+    // Also prefer columns where values are mostly positive (or mostly negative)
+    const posRatio = values.filter(v => v > 0).length / values.length;
+    const signConsistency = Math.max(posRatio, 1 - posRatio);
+    const score = median * signConsistency;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = idx;
+    }
+  }
+  return bestIdx;
+}
+
 function fnv(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
@@ -245,13 +273,14 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
       }
     }
   }
-  if (best.score >= 0.6) {
+  if (best.score >= 0.7) {
     profile.creditIdx = best.c;
     profile.debitIdx = best.d;
     profile.balanceIdx = best.b;
     return { profile, usedHeaders: false, hasBalance: best.b !== -1, layoutKey: fnv(`s${dateIdx}-${descIdx}-${best.c}-${best.d}-${best.b}`) };
   }
   // no reliable balance: use Cr/Dr markers in the description to learn the columns
+  // No reliable balance: use Cr/Dr markers or heuristics
   let crCol = -1, drCol = -1;
   for (const r of dataRows) {
     const desc = (r[descIdx] || '').toLowerCase();
@@ -266,19 +295,36 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
   if (crCol !== -1 && drCol !== -1 && crCol !== drCol) {
     profile.creditIdx = crCol;
     profile.debitIdx = drCol;
-  } else if (numericCols.length >= 2) {
-    profile.creditIdx = numericCols[0];
-    profile.debitIdx = numericCols[1];
-  } else if (numericCols.length === 1) {
+  } else {
+    // Heuristic: exclude the most balance‑like column
+    const balanceCandidate = findBalanceColumn(dataRows, numericCols);
+    const candidates = numericCols.filter(i => i !== balanceCandidate);
+    if (candidates.length >= 2) {
+      profile.creditIdx = candidates[0];
+      profile.debitIdx = candidates[1];
+    } else if (candidates.length === 1) {
+      profile.creditIdx = candidates[0];
+      profile.debitIdx = candidates[0];
+    } else if (numericCols.length >= 2) {
+      // fallback to first two if excluding balance failed
+      profile.creditIdx = numericCols[0];
+      profile.debitIdx = numericCols[1];
+    } else if (numericCols.length === 1) {
       profile.creditIdx = numericCols[0];
       profile.debitIdx = numericCols[0];
-  } else return null;
+    } else return null;
+  }
   return { profile, usedHeaders: false, hasBalance: false, layoutKey: fnv(`m${dateIdx}-${descIdx}-${profile.creditIdx}-${profile.debitIdx}`) };
-}
 
 // ── rows -> transactions ────────────────────────────────────────
-export function rowsToTxns(rows: string[][], p: ColumnProfile, order: DateOrder): ParsedTxn[] {
+export function rowsToTxns(
+  rows: string[][],
+  p: ColumnProfile,
+  order: DateOrder,
+  hasBalance: boolean = false
+): ParsedTxn[] {
   const out: ParsedTxn[] = [];
+  let previousBalance: number | null = null;
   for (const r of rows) {
     const d = tryParseDate((r[p.dateIdx] || '').trim(), order);
     if (!d) continue;
@@ -318,7 +364,59 @@ export function rowsToTxns(rows: string[][], p: ColumnProfile, order: DateOrder)
         }
       }
     }
-
+        // --- Balance verification (if balance column exists) ---
+    if (hasBalance && p.balanceIdx >= 0) {
+      const balanceStr = r[p.balanceIdx] || '';
+      const balance = parseAmount(balanceStr);
+      if (balance !== null && previousBalance !== null) {
+        // Compute expected net change: previousBalance - currentBalance (if balance decreases with debits)
+        // OR currentBalance - previousBalance (if balance increases with credits)
+        const delta1 = previousBalance - balance; // positive means debit (if balance goes down)
+        const delta2 = balance - previousBalance; // positive means credit
+        let expectedDir: Direction | null = null;
+        let expectedAmt = 0;
+        if (Math.abs(delta1) > 0.01 && Math.abs(delta1 - amount) < 0.01) {
+          // delta1 matches the detected amount
+          expectedDir = delta1 > 0 ? 'debit' : 'credit';
+          expectedAmt = Math.abs(delta1);
+        } else if (Math.abs(delta2) > 0.01 && Math.abs(delta2 - amount) < 0.01) {
+          expectedDir = delta2 > 0 ? 'credit' : 'debit';
+          expectedAmt = Math.abs(delta2);
+        }
+        if (expectedDir && expectedAmt > 0) {
+          // If the detected direction/amount differs, we override
+          if (direction !== expectedDir || Math.abs(amount - expectedAmt) > 0.01) {
+            // Try using the other amount column (if both credit and debit columns exist)
+            let alternativeAmount = 0;
+            let alternativeDir: Direction | null = null;
+            if (p.creditIdx >= 0 && p.debitIdx >= 0 && p.creditIdx !== p.debitIdx) {
+              const altCr = p.creditIdx >= 0 ? parseAmount(r[p.creditIdx] || '') : null;
+              const altDr = p.debitIdx >= 0 ? parseAmount(r[p.debitIdx] || '') : null;
+              if (altCr != null && altCr > 0 && Math.abs(altCr - expectedAmt) < 0.01) {
+                alternativeDir = 'credit';
+                alternativeAmount = altCr;
+              } else if (altDr != null && altDr > 0 && Math.abs(altDr - expectedAmt) < 0.01) {
+                alternativeDir = 'debit';
+                alternativeAmount = altDr;
+              }
+            }
+            if (alternativeDir && alternativeAmount > 0) {
+              direction = alternativeDir;
+              amount = alternativeAmount;
+            } else {
+              // If no alternative matches, we trust the expected direction from balance
+              direction = expectedDir;
+              amount = expectedAmt;
+            }
+          }
+        }
+        // Update previous balance for next row
+        previousBalance = balance;
+      } else if (balance !== null) {
+        // First row: just store the balance
+        previousBalance = balance;
+      }
+    }
     if (!direction || amount <= 0) continue;
     const dateISO = toISO(d);
     const refRaw = p.refIdx >= 0 ? r[p.refIdx] || '' : '';
@@ -336,14 +434,38 @@ export function rowsToTxns(rows: string[][], p: ColumnProfile, order: DateOrder)
       source: 'statement',
     });
   }
-  return out;
+
+    // Optional: sanity check using total balance change
+  if (hasBalance && out.length > 0 && p.balanceIdx >= 0) {
+    const firstBalance = parseAmount(rows[0][p.balanceIdx] || '');
+    const lastBalance = parseAmount(rows[rows.length-1][p.balanceIdx] || '');
+    if (firstBalance !== null && lastBalance !== null) {
+      const totalCredits = out.filter(t => t.direction === 'credit').reduce((s, t) => s + t.amount, 0);
+      const totalDebits = out.filter(t => t.direction === 'debit').reduce((s, t) => s + t.amount, 0);
+      const netChange = totalCredits - totalDebits;
+      const balanceChange = lastBalance - firstBalance;
+      if (Math.abs(netChange - balanceChange) > 1) {
+        console.warn('Global balance mismatch:', { netChange, balanceChange });
+      }
+    }
+  }
+    // Deduplicate transactions based on hash
+  const seen = new Set<string>();
+  const unique: ParsedTxn[] = [];
+  for (const txn of out) {
+    if (!seen.has(txn.hash)) {
+      seen.add(txn.hash);
+      unique.push(txn);
+    }
+  }
+  return unique;
 }
 
 export function parseCsvStatement(text: string, order: DateOrder): { txns: ParsedTxn[]; detection: ColumnDetection | null } {
   const rows = parseCSV(text);
   const detection = detectColumns(rows);
   if (!detection) return { txns: [], detection: null };
-  return { txns: rowsToTxns(rows, detection.profile, order), detection };
+  return { txns: rowsToTxns(rows, detection.profile, order, detection.hasBalance), detection };
 }
 
 export async function parsePdfStatement(
@@ -358,7 +480,6 @@ export async function parsePdfStatement(
 
 // ── PDF text -> transactions ────────────────────────────────────
 
-
 export function parseStatementLines(
   rows: string[][],
   order: DateOrder
@@ -367,7 +488,7 @@ export function parseStatementLines(
   if (!detection) {
     return { txns: [], detection: null };
   }
-  const txns = rowsToTxns(rows, detection.profile, order);
+  const txns = rowsToTxns(rows, detection.profile, order, detection.hasBalance);
   return { txns, detection };
 }
 
