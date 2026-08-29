@@ -6,8 +6,8 @@ import {
   Edit3, Check, RotateCcw, Clock, AlertTriangle, Lock, Settings,
   Shield, Sparkles, ChevronRight, X, Repeat, Target, Swords, AlertOctagon,
   Zap, Users, Download, FileText, FileSpreadsheet, QrCode, ScanLine, Copy,
-  CheckCircle2, Share2, Lightbulb, Filter, SlidersHorizontal
-} from 'lucide-react';
+  CheckCircle2, Share2, Lightbulb, Filter, SlidersHorizontal,
+  Eye, EyeOff } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie,
   BarChart, Bar, LineChart, Line
@@ -695,19 +695,35 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
   const [password, setPassword] = useState('');
   const [dateOrder, setDateOrder] = useState<DateOrder>('dmy');
   const [rows, setRows] = useState<ImportRow[] | null>(null);
+  const [page, setPage] = useState(0);
+  const [filter, setFilter] = useState<'all' | 'credit' | 'debit'>('all');
+  const [showPassword, setShowPassword] = useState(false);
+  const [monthBlocked, setMonthBlocked] = useState(false);
+  const [importAnyway, setImportAnyway] = useState(false);
+  const [completion, setCompletion] = useState<null | { imported: number; dupes: number; deferred: number; skipped: number }>(null);
+  const PAGE_SIZE = 50;
   const pending = currentYear?.pendingTxns || [];
   const rules = currentYear?.importRules || [];
 
   const buildRows = (txns: ParsedTxn[]): ImportRow[] => {
-    const processed = new Set(currentYear?.processedTxnHashes || []);
+    const processedH = new Set(currentYear?.processedTxnHashes || []);
+    const processedI = new Set(currentYear?.processedTxnIds || []);
+    const importedMonths = new Set(currentYear?.importedStatementMonths || []);
     const activeYearNum = parseInt(state.activeYear, 10);
+    const seenKeys = new Set<string>();
     return txns.map(t => {
       const rule = rules.find(r => t.description.toLowerCase().includes(r.match.toLowerCase()));
       const section = rule ? rule.section : t.direction === 'credit' ? 'incomeEntries' : 'householdExpenses';
       let entryId = rule ? rule.entryId : '';
       const list = section === 'incomeEntries' ? (currentYear?.incomeEntries || []) : (currentYear?.householdExpenses || []);
       if (entryId && !list.some(e => e.id === entryId)) entryId = '';
-      return { txn: t, selected: true, dupe: processed.has(t.hash), yearMismatch: t.yearHint !== activeYearNum, section, entryId, newName: entryId ? '' : suggestedRowName(t.description) };
+      const key = (t.refId ? `id:${t.refId}` : `h:${t.hash}`);
+      const inBatch = seenKeys.has(key);
+      seenKeys.add(key);
+      const monthKey = t.dateISO.slice(0, 7);
+      const monthImported = importedMonths.has(monthKey);
+      const isDupe = t.refId ? processedI.has(t.refId) : processedH.has(t.hash);
+      return { txn: t, selected: true, dupe: isDupe || inBatch, yearMismatch: t.yearHint !== activeYearNum, monthImported, section, entryId, newName: entryId ? '' : suggestedRowName(t.description) };
     });
   };
 
@@ -715,7 +731,7 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
     const file = e.target.files?.[0];
     if (file) e.target.value = '';
     if (!file || !currentYear) return;
-    setBusy(true); setError(''); setNotice('');
+    setBusy(true); setError(''); setNotice(''); setCompletion(null); setImportAnyway(false); setMonthBlocked(false); setPage(0);
     try {
       const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
       let txns: ParsedTxn[] = [];
@@ -733,8 +749,17 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
         return;
       }
       const built = buildRows(txns);
+      const monthSet = new Set(built.map(r => r.txn.dateISO.slice(0, 7)));
+      const locked = new Set(currentYear?.importedStatementMonths || []);
+      const allLocked = built.length > 0 && [...monthSet].every(m => locked.has(m));
       if (built.every(r => r.dupe)) {
         setNotice(`All ${built.length} transactions were already imported earlier — nothing new.`);
+        setBusy(false);
+        return;
+      }
+      if (allLocked && !importAnyway) {
+        setMonthBlocked(true);
+        setRows(built);
         setBusy(false);
         return;
       }
@@ -793,23 +818,52 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
           {dateOrder}
         </button>
       </div>
-      <input type="text" value={password} onChange={e => setPassword(e.target.value)} placeholder="Statement password (only for protected PDFs)"
-        className="w-full mt-2 bg-ios-surface-2 rounded-xl px-3 py-2 text-[11px] text-ios-text border border-ios-border/30 outline-none" />
+      <div className="relative mt-2">
+        <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="Statement password (only for protected PDFs)" autoComplete="off" autoCapitalize="none" autoCorrect="off"
+          className="w-full bg-ios-surface-2 rounded-xl px-3 py-2 pr-10 text-[11px] text-ios-text border border-ios-border/30 outline-none" />
+        {password && (
+          <button type="button" onClick={() => setShowPassword(v => !v)} aria-label={showPassword ? 'Hide password' : 'Show password'}
+            className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center text-ios-text-secondary">
+            {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        )}
+      </div>
       {error && <div className="mt-2 text-[10px] text-ios-red font-medium">{error}</div>}
       {notice && <div className="mt-2 text-[10px] text-ios-green font-medium">{notice}</div>}
 
       <BottomSheet isOpen={!!rows} onClose={() => setRows(null)} title="Review imported transactions">
         {rows && (
           <>
+            {monthBlocked && (
+              <div className="mb-2 p-2.5 rounded-xl bg-ios-orange/15 text-[11px] text-ios-orange">
+                This month was already imported. Import again? (per-transaction dedupe keeps it safe)
+                <button onClick={() => { setImportAnyway(true); setMonthBlocked(false); }} className="ml-2 font-bold underline">Import anyway</button>
+              </div>
+            )}
+            {!monthBlocked && completion && (
+              <div className="mb-2 p-2.5 rounded-xl bg-ios-green/15 text-[11px] text-ios-green">
+                {completion.imported} imported • {completion.dupes} duplicates skipped • {completion.deferred} kept later
+                {completion.skipped > 0 ? ` • ${completion.skipped} skipped (no category)` : ''}
+              </div>
+            )}
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex gap-1.5">
+                {(['all', 'credit', 'debit'] as const).map(f => (
+                  <button key={f} onClick={() => { setFilter(f); setPage(0); }} className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${filter === f ? 'bg-ios-blue text-white' : 'bg-ios-surface-2 text-ios-text-secondary'}`}>{f}</button>
+                ))}
+              </div>
+              <span className="text-[10px] text-ios-text-secondary">{rows.length} total</span>
+            </div>
             <div className="space-y-2 max-h-[50vh] overflow-y-auto">
-              {rows.map((r, i) => (
-                <div key={r.txn.hash + i} className={`p-2.5 rounded-xl border ${r.dupe || r.yearMismatch ? 'opacity-50 border-ios-border/10' : 'border-ios-border/20'} bg-ios-surface-2`}>
+              {rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).length > 0 ? (
+                rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((r, i) => (
+                <div key={r.txn.id || r.txn.hash} className={`p-2.5 rounded-xl border ${r.dupe || r.yearMismatch ? 'opacity-50 border-ios-border/10' : 'border-ios-border/20'} bg-ios-surface-2`}>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setRows(rows.map((x, j) => j === i ? { ...x, selected: !x.selected } : x))}
+                    <button onClick={() => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, selected: !x.selected } : x)))}
                       className={`w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold ${r.selected ? 'bg-ios-blue text-white' : 'bg-ios-surface text-ios-text-secondary border border-ios-border/30'}`}>
                       {r.selected ? '✓' : ''}
                     </button>
-                    <button onClick={() => setRows(rows.map((x, j) => j === i ? { ...x, txn: { ...x.txn, direction: x.txn.direction === 'credit' ? 'debit' : 'credit' } } : x))}
+                    <button onClick={() => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, txn: { ...x.txn, direction: x.txn.direction === 'credit' ? 'debit' : 'credit' } } : x)))}
                       className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold ${r.txn.direction === 'credit' ? 'bg-ios-green/15 text-ios-green' : 'bg-ios-red/15 text-ios-red'}`}>
                       {r.txn.direction === 'credit' ? 'CR' : 'DR'}
                     </button>
@@ -819,14 +873,14 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
                   <div className="text-[10px] text-ios-text-secondary truncate mt-1">{r.txn.description}</div>
                   {!r.dupe && !r.yearMismatch && (
                     <div className="flex items-center gap-1.5 mt-1.5">
-                      <select value={r.section} onChange={e => setRows(rows.map((x, j) => j === i ? { ...x, section: e.target.value as ImportRow['section'], entryId: '', newName: suggestedRowName(x.txn.description) } : x))}
+                      <select value={r.section} onChange={e => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, section: e.target.value as ImportRow['section'], entryId: '', newName: suggestedRowName(x.txn.description) } : x)))}
                         className='w-full bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none mb-1'>
                         <option value="incomeEntries">→ Incoming (income)</option>
                         <option value="householdExpenses">→ Expense (household)</option>
                         <option value="savingsData">→ Savings</option>
                         <option value="debtRepayment">→ Debt Repayment (EMI)</option>
                       </select>
-                      <select value={r.entryId} onChange={e => setRows(rows.map((x, j) => j === i ? { ...x, entryId: e.target.value, newName: e.target.value ? '' : x.newName } : x))}
+                      <select value={r.entryId} onChange={e => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, entryId: e.target.value, newName: e.target.value ? '' : x.newName } : x)))}
                         className='flex-1 bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none'>
                         <option value="">＋ New row…</option>
                         {(r.section === 'incomeEntries' ? currentYear.incomeEntries : r.section === 'savingsData' ? currentYear.savingsData : r.section === 'debtRepayment' ? currentYear.debtRepayment : currentYear.householdExpenses).map(en => (
@@ -834,7 +888,7 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
                         ))}
                       </select>
                       {!r.entryId && (
-                        <input value={r.newName} onChange={e => setRows(rows.map((x, j) => j === i ? { ...x, newName: e.target.value } : x))}
+                        <input value={r.newName} onChange={e => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, newName: e.target.value } : x)))}
                           placeholder="New row name" className="flex-1 bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none" />
                       )}
                     </div>
@@ -842,8 +896,19 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
                   {r.dupe && <div className="text-[9px] text-ios-text-secondary mt-1">Already imported earlier</div>}
                   {r.yearMismatch && <div className="text-[9px] text-ios-orange mt-1">Dated {r.txn.yearHint} — switch to that year to import</div>}
                 </div>
-              ))}
+              ))
+            ) : (
+                <div className="py-6 text-center text-[11px] text-ios-text-secondary">No {filter === 'all' ? '' : filter + ' '}transactions in this view.</div>
+              )}
             </div>
+
+            {Math.ceil(rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).length / PAGE_SIZE) > 1 && (
+              <div className="flex items-center justify-between mt-3">
+                <button disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))} className="px-3 py-1.5 rounded-xl bg-ios-surface-2 text-[11px] font-bold text-ios-text-secondary disabled:opacity-40">← Prev</button>
+                <span className="text-[10px] text-ios-text-secondary">Page {page + 1} / {Math.ceil(rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).length / PAGE_SIZE)}</span>
+                <button disabled={(page + 1) * PAGE_SIZE >= rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).length} onClick={() => setPage(p => p + 1)} className="px-3 py-1.5 rounded-xl bg-ios-surface-2 text-[11px] font-bold text-ios-text-secondary disabled:opacity-40">Next →</button>
+              </div>
+            )}
             <button onClick={handleConfirm} className="w-full mt-3 py-2.5 rounded-xl bg-ios-green/15 text-xs font-bold text-ios-green">
               Confirm selected ({rows.filter(r => r.selected && !r.dupe && !r.yearMismatch && (r.entryId || r.newName.trim())).length})
             </button>
