@@ -582,8 +582,15 @@ export function useBudgetStore() {
       const entries = [...(y[section] as DataEntry[])];
       let targetId = entryId;
       if (!targetId) {
-        targetId = `${(newName || 'imported').toLowerCase().replace(/\s+/g, '-')}-${now()}`;
-        entries.push({ id: targetId, name: (newName || 'IMPORTED').toUpperCase(), values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts });
+        const newNameUpper = (newName || 'IMPORTED').toUpperCase();
+        // Check for existing entry with same name - aggregate into that instead of creating a duplicate
+        const existingEntry = entries.find(e => e.name === newNameUpper);
+        if (existingEntry) {
+          targetId = existingEntry.id;
+        } else {
+          targetId = `${(newName || 'imported').toLowerCase().replace(/\s+/g, '-')}-${now()}`;
+          entries.push({ id: targetId, name: newNameUpper, values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts });
+        }
       }
       const idx = entries.findIndex(e => e.id === targetId);
       if (idx === -1) return prev;
@@ -1548,6 +1555,3 @@ function sumAll2Month(y: YearData, m: number, section: keyof YearData): number {
   updateCoachSettings,    
   };
 }
-
-
-
