@@ -11,6 +11,7 @@ export interface ParsedTxn {
   id: string;
   hash: string;
   dateISO: string; // yyyy-mm-dd
+  refId?: string;   // bank reference / UTR / RRN / txn id when the statement exposes one
   amount: number;
   direction: Direction;
   description: string;
@@ -25,6 +26,7 @@ export interface ColumnProfile {
   creditIdx: number;
   debitIdx: number;
   balanceIdx: number;
+  refIdx: number;
 }
 
 export interface ColumnDetection {
@@ -42,6 +44,10 @@ const MONTH_NAMES: Record<string, number> = {
 };
 
 // ── hashing (FNV-1a) ────────────────────────────────────────────
+export function normalizeRef(raw: string): string {
+  return String(raw || '').replace(/^(up|upi|[A-Z]{2,5}\d*)/i, '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+}
+
 export function txnHash(dateISO: string, amount: number, direction: Direction, description: string): string {
   const norm = description.toLowerCase().replace(/\s+/g, ' ').trim();
   const s = `${dateISO}|${amount.toFixed(2)}|${direction}|${norm}`;
@@ -155,9 +161,10 @@ const RX = {
   credit: /credit|deposit|received/i,
   debit: /debit|withdrawal|paid|spent/i,
   balance: /balance|\bbal\b/i,
+  ref: /ref|utr|rrn|txns?id|reference|chq|cheque|serial/i,
 };
 
-const emptyProfile = (): ColumnProfile => ({ dateIdx: -1, descIdx: -1, creditIdx: -1, debitIdx: -1, balanceIdx: -1 });
+const emptyProfile = (): ColumnProfile => ({ dateIdx: -1, descIdx: -1, creditIdx: -1, debitIdx: -1, balanceIdx: -1, refIdx: -1 });
 
 function fnv(s: string): string {
   let h = 0x811c9dc5;
@@ -181,11 +188,12 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
       if (RX.date.test(c) && p.dateIdx === -1) p.dateIdx = i;
       else if (RX.desc.test(c) && p.descIdx === -1) p.descIdx = i;
       else if (RX.balance.test(c) && p.balanceIdx === -1) p.balanceIdx = i;
+      else if (RX.ref.test(c) && p.refIdx === -1) p.refIdx = i;
       else if (RX.credit.test(c) && p.creditIdx === -1) p.creditIdx = i;
       else if (RX.debit.test(c) && p.debitIdx === -1) p.debitIdx = i;
     });
     if (p.dateIdx !== -1 && (p.creditIdx !== -1 || p.debitIdx !== -1)) {
-      return { profile: p, usedHeaders: true, hasBalance: p.balanceIdx !== -1, layoutKey: fnv(`h${p.dateIdx}-${p.descIdx}-${p.creditIdx}-${p.debitIdx}-${p.balanceIdx}`) };
+      return { profile: p, usedHeaders: true, hasBalance: p.balanceIdx !== -1, layoutKey: fnv(`h${p.dateIdx}-${p.descIdx}-${p.creditIdx}-${p.debitIdx}-${p.balanceIdx}-${p.refIdx}`) };
     }
   }
   // 2) structural inference (no usable headers)
@@ -281,8 +289,11 @@ export function rowsToTxns(rows: string[][], p: ColumnProfile, order: DateOrder)
     else if (cr != null && dr != null && dr < 0) { direction = 'credit'; amount = -dr; }
     if (!direction || amount <= 0) continue;
     const dateISO = toISO(d);
+    const refRaw = p.refIdx >= 0 ? r[p.refIdx] || '' : '';
+    const refId = normalizeRef(refRaw) || undefined;
     out.push({
       id: '',
+      refId,
       hash: txnHash(dateISO, amount, direction, desc),
       dateISO,
       amount,
