@@ -243,7 +243,13 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
       else if (RX.debit.test(c) && p.debitIdx === -1) p.debitIdx = i;
     });
     if (p.dateIdx !== -1 && p.creditIdx !== -1 && p.debitIdx !== -1) {
-      return { profile: p, usedHeaders: true, hasBalance: p.balanceIdx !== -1, layoutKey: fnv(`h${p.dateIdx}-${p.descIdx}-${p.creditIdx}-${p.debitIdx}-${p.balanceIdx}-${p.refIdx}`) };
+      return {
+        profile: p,
+        usedHeaders: true,
+        hasBalance: p.balanceIdx !== -1,
+        layoutKey: fnv(`h${p.dateIdx}-${p.descIdx}-${p.creditIdx}-${p.debitIdx}-${p.balanceIdx}-${p.refIdx}`)
+      };
+    
     }
   }
   // 2) structural inference (no usable headers)
