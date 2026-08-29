@@ -161,8 +161,8 @@ export function parseCSV(text: string): string[][] {
 const RX = {
   date: /date|posted|value\s*dt|txn/i,
   desc: /narration|description|particulars|details|remarks|label|payee|merchant|info|transaction/i,
-  credit: /credit|deposit|received|cr\b|deposit/i,   // added \bcr\b
-  debit: /debit|withdrawal|paid|spent|dr\b|withdrawal/i, // added \bdr\b
+  credit: /credit|deposit|deposits|received|cr\b|deposit|receipt|incoming|pay[in]?|payment\s*in/i,
+  debit: /debit|withdrawal|withdrawalspaid|spent|dr\b|withdrawal|payment\s*out|outgoing|charge|expense/i,
   balance: /balance|\bbal\b/i,
   ref: /ref|utr|rrn|txns?id|reference|chq|cheque|serial/i,
 };
@@ -279,41 +279,60 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
     profile.balanceIdx = best.b;
     return { profile, usedHeaders: false, hasBalance: best.b !== -1, layoutKey: fnv(`s${dateIdx}-${descIdx}-${best.c}-${best.d}-${best.b}`) };
   }
-  // no reliable balance: use Cr/Dr markers in the description to learn the columns
-  // No reliable balance: use Cr/Dr markers or heuristics
+  // No reliable balance: try to identify credit/debit columns from headers, then markers, then heuristics
   let crCol = -1, drCol = -1;
-  for (const r of dataRows) {
-    const desc = (r[descIdx] || '').toLowerCase();
-    const isCr = /\bcr\b|\bcredit\b/.test(desc), isDr = /\bdr\b|\bdebit\b/.test(desc);
-    if (!isCr && !isDr) continue;
-    for (const i of numericCols) {
-      if (parseAmount(r[i] || '') == null) continue;
-      if (isCr && crCol === -1) crCol = i;
-      if (isDr && drCol === -1) drCol = i;
+  
+  // 1) Try to find credit/debit columns using header keywords (if not already done)
+  //    Scan the first few rows (same as header detection but without requiring date)
+  const headerLimit = Math.min(allRows.length, 15);
+  for (let h = 0; h < headerLimit && (crCol === -1 || drCol === -1); h++) {
+    const row = allRows[h];
+    row.forEach((cell, i) => {
+      if (RX.credit.test(cell) && crCol === -1 && numericCols.includes(i)) crCol = i;
+      if (RX.debit.test(cell) && drCol === -1 && numericCols.includes(i)) drCol = i;
+    });
+  }
+
+  // 2) If headers didn't work, use Cr/Dr markers in the description column
+  if (crCol === -1 || drCol === -1) {
+    for (const r of dataRows) {
+      const desc = (r[descIdx] || '').toLowerCase();
+      const isCr = /\bcr\b|\bcredit\b/.test(desc), isDr = /\bdr\b|\bdebit\b/.test(desc);
+      if (!isCr && !isDr) continue;
+      for (const i of numericCols) {
+        if (parseAmount(r[i] || '') == null) continue;
+        if (isCr && crCol === -1) crCol = i;
+        if (isDr && drCol === -1) drCol = i;
+      }
     }
   }
+
+  // 3) If we have both distinct columns, use them
   if (crCol !== -1 && drCol !== -1 && crCol !== drCol) {
     profile.creditIdx = crCol;
     profile.debitIdx = drCol;
   } else {
-    // Heuristic: exclude the most balance‑like column
+    // 4) Heuristic: exclude the most balance‑like column and pick the first two numeric columns
     const balanceCandidate = findBalanceColumn(dataRows, numericCols);
     const candidates = numericCols.filter(i => i !== balanceCandidate);
     if (candidates.length >= 2) {
       profile.creditIdx = candidates[0];
       profile.debitIdx = candidates[1];
     } else if (candidates.length === 1) {
+      // Only one amount column → use it for credit, debit will be inferred by description/sign
       profile.creditIdx = candidates[0];
-      profile.debitIdx = candidates[0];
+      profile.debitIdx = -1;
     } else if (numericCols.length >= 2) {
       // fallback to first two if excluding balance failed
       profile.creditIdx = numericCols[0];
       profile.debitIdx = numericCols[1];
     } else if (numericCols.length === 1) {
+      // Only one numeric column total
       profile.creditIdx = numericCols[0];
-      profile.debitIdx = numericCols[0];
+      profile.debitIdx = -1;
     } else return null;
   }
+
   return { profile, usedHeaders: false, hasBalance: false, layoutKey: fnv(`m${dateIdx}-${descIdx}-${profile.creditIdx}-${profile.debitIdx}`) };
 }
 // ── rows -> transactions ────────────────────────────────────────
