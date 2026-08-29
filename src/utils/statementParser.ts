@@ -1,4 +1,4 @@
-﻿// src/utils/statementParser.ts
+// src/utils/statementParser.ts
 // Country-agnostic bank-statement parser: CSV or PDF text -> normalized transactions.
 // No currency, date-format, bank or country assumptions: every ambiguous dimension
 // (day/month order, thousands notation, direction signal) is auto-inferred and can
@@ -267,7 +267,8 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
     profile.creditIdx = numericCols[0];
     profile.debitIdx = numericCols[1];
   } else if (numericCols.length === 1) {
-    profile.debitIdx = numericCols[0];
+      profile.creditIdx = numericCols[0];
+      profile.debitIdx = numericCols[0];
   } else return null;
   return { profile, usedHeaders: false, hasBalance: false, layoutKey: fnv(`m${dateIdx}-${descIdx}-${profile.creditIdx}-${profile.debitIdx}`) };
 }
@@ -342,7 +343,10 @@ export function parseStatementLines(lines: string[], order: DateOrder): { txns: 
     if (!/\bcr\b|\bdr\b|\bcredit\b|\bdebit\b/.test(joined)) {
       // two amounts: [amount, balance]; pick the one that is NOT explainable as balance —
       // heuristic: with a balance column the first amount is the transaction.
-      direction = amounts.length >= 2 ? 'debit' : 'debit'; // preview lets the user flip
+      const rawTokens = rest.filter(isAmountToken);
+      const firstRaw = (rawTokens[0] ?? '').trim();
+      const isNegative = /^\(|^-/.test(firstRaw);
+      direction = isNegative ? 'credit' : 'debit';
     }
     const amount = amounts[0];
     const descTokens = rest.filter(t => !isAmountToken(t));
