@@ -338,10 +338,12 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
         profile.creditIdx = numericCols[0];
         profile.debitIdx = -1;
       } else return null;
-    }  
+    }
+  }
 
   return { profile, usedHeaders: false, hasBalance: false, layoutKey: fnv(`m${dateIdx}-${descIdx}-${profile.creditIdx}-${profile.debitIdx}`) };
 }
+
 // ── rows -> transactions ────────────────────────────────────────
 export function rowsToTxns(rows: string[][],p: ColumnProfile,order: DateOrder,hasBalance: boolean = false): ParsedTxn[] {
   const out: ParsedTxn[] = [];
