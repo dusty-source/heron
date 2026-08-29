@@ -68,7 +68,9 @@ export interface YearData {
   createdAt: string;
   modifiedAt: string;
   pendingTxns: ParsedTxn[];      // statement rows awaiting user confirmation
-  processedTxnHashes: string[];  // dedupe for already-imported/ignored transactions
+  importedStatementMonths: string[]; // "YYYY-M" months that have had a transaction confirmed (month-level import lock)
+  processedTxnHashes: string[];  // dedupe for already-imported/ignored transactions (content-hash fallback)
+  processedTxnIds: string[];     // dedupe by bank reference / UTR / RRN when present (primary)
   importRules: ImportRule[];     // remembered description -> row mappings
   familySync: FamilySync;
   coachInsights: CoachInsight[];
@@ -252,7 +254,9 @@ function createEmptyYear(year: string): YearData {
     debtMeta: [], // paired debtMeta rows are created with each debt entry
     taxShieldEntries: [], // user adds their own tax instruments
     pendingTxns: [],
+    importedStatementMonths: [],
     processedTxnHashes: [],
+    processedTxnIds: [],
     importRules: [],
     familySync: { enabled: false, partnerName: '', sharedExpenses: [], noSpendStreak: 0, lastNoSpendDate: null, partnerStreak: 0 },
     windfallBaseline: 0,
@@ -317,7 +321,9 @@ function migrateV4ToV5(state: any): BudgetState {
       y.familySync = { enabled: false, partnerName: '', sharedExpenses: [], noSpendStreak: 0, lastNoSpendDate: null, partnerStreak: 0 };
     }
       if (!Array.isArray(y.pendingTxns)) y.pendingTxns = [];
+      if (!Array.isArray(y.importedStatementMonths)) y.importedStatementMonths = [];
       if (!Array.isArray(y.processedTxnHashes)) y.processedTxnHashes = [];
+      if (!Array.isArray(y.processedTxnIds)) y.processedTxnIds = [];
       if (!Array.isArray(y.importRules)) y.importRules = [];
   }
   return state as BudgetState;
@@ -549,16 +555,21 @@ export function useBudgetStore() {
   }, []);
 
   // ── Statement import: pending queue + confirmation ──
+  const txnKey = (t: ParsedTxn) => (t.refId ? `id:${t.refId}` : `h:${t.hash}`);
   const queueTransactions = useCallback((txns: ParsedTxn[]) => {
     setState(prev => {
       const y = prev.years[prev.activeYear];
       if (!y) return prev;
-      const processed = new Set(y.processedTxnHashes);
-      const pendingHashes = new Set(y.pendingTxns.map(t => t.hash));
-      const fresh = txns.filter(t => !processed.has(t.hash) && !pendingHashes.has(t.hash));
+      const processedH = new Set(y.processedTxnHashes);
+      const processedI = new Set(y.processedTxnIds);
+      const pendingSet = new Set(y.pendingTxns.map(txnKey));
+      const fresh = txns.filter(t =>
+        !(t.refId ? processedI.has(t.refId) : processedH.has(t.hash)) &&
+        !pendingSet.has(txnKey(t))
+      );
       if (fresh.length === 0) return prev;
       const withIds = fresh.map((t, i) => ({ ...t, id: `txn-${Date.now()}-${i}` }));
-      const updated = { ...y, pendingTxns: [...y.pendingTxns, ...withIds].slice(0, 200), modifiedAt: now() };
+      const updated = { ...y, pendingTxns: [...y.pendingTxns, ...withIds].slice(0, 1000), modifiedAt: now() };
       return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
     });
   }, []);
@@ -579,7 +590,10 @@ export function useBudgetStore() {
       const values = [...entries[idx].values];
       values[txn.monthIndex] = (values[txn.monthIndex] || 0) + txn.amount;
       entries[idx] = { ...entries[idx], values, modifiedAt: ts };
-      const base = { ...y, [section]: entries, pendingTxns: y.pendingTxns.filter(t => t.hash !== txn.hash), processedTxnHashes: [txn.hash, ...y.processedTxnHashes].slice(0, 500) } as YearData;
+      const base0 = { ...y, [section]: entries, pendingTxns: y.pendingTxns.filter(t => t.hash !== txn.hash && t.refId !== txn.refId) } as YearData;
+      const base1 = { ...base0, processedTxnHashes: txn.refId ? base0.processedTxnHashes : [txn.hash, ...base0.processedTxnHashes].slice(0, 2000) } as YearData;
+      const base2 = txn.refId ? { ...base1, processedTxnIds: [txn.refId, ...base1.processedTxnIds].slice(0, 2000) } : base1;
+      const base = withImportedMonth(base2, [monthKeyOf(txn)]);
       const updated = { ...base, remarks: deriveRemarksForMonth(base, txn.monthIndex), modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
@@ -589,13 +603,33 @@ export function useBudgetStore() {
     });
   }, []);
 
+  const monthKeyOf = (t: { dateISO: string }) => t.dateISO.slice(0, 7); // "YYYY-M"
+  const withImportedMonth = (base: YearData, months: string[]) => {
+    const added = months.filter(m => !base.importedStatementMonths.includes(m));
+    return added.length ? { ...base, importedStatementMonths: [...base.importedStatementMonths, ...added].sort() } : base;
+  };
+
+  // Allow re-importing a locked month (done deliberately, e.g. after correcting a wrong file).
+  const clearImportedMonth = useCallback((month: string) => {
+    setState(prev => {
+      const y = prev.years[prev.activeYear];
+      if (!y) return prev;
+      const updated = { ...y, importedStatementMonths: y.importedStatementMonths.filter(m => m !== month), modifiedAt: now() };
+      return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
+    });
+  }, []);
+
   const rejectProcessedTxn = useCallback((txnId: string) => {
     setState(prev => {
       const y = prev.years[prev.activeYear];
       if (!y) return prev;
       const txn = y.pendingTxns.find(t => t.id === txnId);
       if (!txn) return prev;
-      const updated = { ...y, pendingTxns: y.pendingTxns.filter(t => t.id !== txnId), processedTxnHashes: [txn.hash, ...y.processedTxnHashes].slice(0, 500), modifiedAt: now() };
+      const updated = { ...y,
+        pendingTxns: y.pendingTxns.filter(t => t.id !== txnId),
+        processedTxnHashes: txn.refId ? y.processedTxnHashes : [txn.hash, ...y.processedTxnHashes].slice(0, 2000),
+        processedTxnIds: txn.refId ? [txn.refId, ...y.processedTxnIds].slice(0, 2000) : y.processedTxnIds,
+        modifiedAt: now() };
       return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
     });
   }, []);
@@ -1463,6 +1497,7 @@ function sumAll2Month(y: YearData, m: number, section: keyof YearData): number {
     queueTransactions,
     confirmImportedTxn,
     rejectProcessedTxn,
+    clearImportedMonth,
     addImportRule,
     deleteImportRule,
     setPasscode,
