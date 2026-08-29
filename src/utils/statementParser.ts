@@ -36,6 +36,25 @@ export interface ColumnDetection {
   layoutKey: string;
 }
 
+
+export interface BalanceCheck {
+  openingBalance: number;
+  closingBalance: number;
+  totalDeposits: number;
+  totalWithdrawals: number;
+  expectedClosing: number;
+  difference: number;
+  isValid: boolean;
+}
+
+export interface ParseResult {
+  txns: ParsedTxn[];
+  detection: ColumnDetection | null;
+  balanceCheck: BalanceCheck | null;
+  rawTable: string[][];
+  errors: string[];
+}
+
 const MONTH_NAMES: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8,
   sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,
@@ -483,35 +502,101 @@ export function rowsToTxns(rows: string[][],p: ColumnProfile,order: DateOrder,ha
   return unique;
 }
 
-export function parseCsvStatement(text: string, order: DateOrder): { txns: ParsedTxn[]; detection: ColumnDetection | null } {
+export function parseCsvStatement(text: string, order: DateOrder): ParseResult {
   const rows = parseCSV(text);
-  const detection = detectColumns(rows);
-  if (!detection) return { txns: [], detection: null };
-  return { txns: rowsToTxns(rows, detection.profile, order, detection.hasBalance), detection };
+  return parseStatementLines(rows, order);
 }
 
 export async function parsePdfStatement(
   data: ArrayBuffer,
   order: DateOrder,
   password?: string
-): Promise<{ txns: ParsedTxn[]; detection: ColumnDetection | null }> {
+): Promise<ParseResult> {
   const rows = await extractTextFromPdf(data, password);
-  if (rows.length === 0) return { txns: [], detection: null };
+  if (rows.length === 0) {
+    return { txns: [], detection: null, balanceCheck: null, rawTable: [], errors: ['No text extracted from PDF.'] };
+  }
   return parseStatementLines(rows, order);
 }
 
 // ── PDF text -> transactions ────────────────────────────────────
 
+export function validateBalanceSheet(
+  rows: string[][],
+  p: ColumnProfile
+): BalanceCheck {
+  const result: BalanceCheck = {
+    openingBalance: 0,
+    closingBalance: 0,
+    totalDeposits: 0,
+    totalWithdrawals: 0,
+    expectedClosing: 0,
+    difference: 0,
+    isValid: false,
+  };
+  if (!rows.length || p.balanceIdx < 0) return result;
+
+  // Sum deposits/withdrawals directly from the raw statement rows
+  let totalDeposits = 0;
+  let totalWithdrawals = 0;
+  for (const r of rows) {
+    if (p.creditIdx >= 0) {
+      const v = parseAmount(r[p.creditIdx] || '');
+      if (v !== null && v > 0) totalDeposits += v;
+    }
+    if (p.debitIdx >= 0) {
+      const v = parseAmount(r[p.debitIdx] || '');
+      if (v !== null && v > 0) totalWithdrawals += v;
+    }
+  }
+
+  const firstBalance = parseAmount(rows[0][p.balanceIdx] || '');
+  const lastBalance = parseAmount(rows[rows.length - 1][p.balanceIdx] || '');
+  if (firstBalance === null || lastBalance === null) return result;
+
+  // First row's balance is AFTER its own transaction, so derive opening balance:
+  // opening = first_balance - deposit + withdrawal (of the first row)
+  const firstDeposit = p.creditIdx >= 0 ? parseAmount(rows[0][p.creditIdx] || '') ?? 0 : 0;
+  const firstWithdrawal = p.debitIdx >= 0 ? parseAmount(rows[0][p.debitIdx] || '') ?? 0 : 0;
+  const opening = firstBalance - Math.max(firstDeposit, 0) + Math.max(firstWithdrawal, 0);
+
+  result.openingBalance = opening;
+  result.closingBalance = lastBalance;
+  result.totalDeposits = totalDeposits;
+  result.totalWithdrawals = totalWithdrawals;
+  result.expectedClosing = opening + totalDeposits - totalWithdrawals;
+  result.difference = Math.abs(result.closingBalance - result.expectedClosing);
+  result.isValid = result.difference <= 0.02;
+  return result;
+}
+
 export function parseStatementLines(
   rows: string[][],
   order: DateOrder
-): { txns: ParsedTxn[]; detection: ColumnDetection | null } {
+): ParseResult {
   const detection = detectColumns(rows);
+  const errors: string[] = [];
   if (!detection) {
-    return { txns: [], detection: null };
+    errors.push('Could not detect table columns from statement.');
+    return { txns: [], detection: null, balanceCheck: null, rawTable: rows, errors };
   }
   const txns = rowsToTxns(rows, detection.profile, order, detection.hasBalance);
-  return { txns, detection };
+  const balanceCheck = validateBalanceSheet(rows, detection.profile);
+  if (!balanceCheck.isValid && detection.hasBalance) {
+    errors.push(
+      `Balance mismatch: expected closing ${balanceCheck.expectedClosing.toFixed(2)}, ` +
+      `found ${balanceCheck.closingBalance.toFixed(2)} (difference ${balanceCheck.difference.toFixed(2)}).`
+    );
+  }
+  return { txns, detection, balanceCheck, rawTable: rows, errors };
+}
+
+// ── Insert transactions after user confirmation ─────────────────
+// This function is called by the UI only after the user has reviewed the
+// parsed transactions (and balance check result) and confirmed them.
+export function prepareForInsert(txns: ParsedTxn[]): ParsedTxn[] {
+  // Assign final ids at insert time (hash is already unique per txn)
+  return txns.map((t, i) => ({ ...t, id: `${t.hash}-${i}` }));
 }
 
 // ── PDF text extraction (pdf.js, lazily imported) ───────────────
@@ -615,6 +700,46 @@ export async function extractTextFromPdf(
         row.push('');
       }
     }
+  }
+
+  // ── Merge multi-line transactions ──
+  // Find the date column (first column that mostly contains dates in the top rows)
+  let dateColIdx = -1;
+  const scanLimit = Math.min(table.length, 15);
+  for (let c = 0; c < (table[0]?.length || 0); c++) {
+    let dateCount = 0;
+    for (let r = 0; r < scanLimit; r++) {
+      if (isDateLike((table[r][c] || '').trim())) dateCount++;
+    }
+    if (dateCount >= 2) { dateColIdx = c; break; }
+  }
+
+  if (dateColIdx !== -1) {
+    const mergedTable: string[][] = [];
+    for (const row of table) {
+      const firstCell = (row[dateColIdx] || '').trim();
+      const isTxnStart = isDateLike(firstCell);
+      if (isTxnStart || mergedTable.length === 0) {
+        mergedTable.push([...row]);
+      } else {
+        // Continuation line: merge into previous transaction row
+        const prev = mergedTable[mergedTable.length - 1];
+        for (let c = 0; c < row.length; c++) {
+          const cell = (row[c] || '').trim();
+          if (!cell) continue;
+          if (c === dateColIdx) continue; // skip date col for continuation
+          if (parseAmount(cell) !== null && isAmountCell(cell) && !prev[c]) {
+            // Amount-only continuation line: fill missing amount column
+            prev[c] = cell;
+          } else {
+            // Text: append to description column
+            prev[c] = prev[c] ? `${prev[c]} ${cell}` : cell;
+          }
+        }
+      }
+    }
+    table.length = 0;
+    table.push(...mergedTable);
   }
 
   return table;
