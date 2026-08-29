@@ -1549,5 +1549,4 @@ function sumAll2Month(y: YearData, m: number, section: keyof YearData): number {
   };
 }
 
-      // GUARD: skip if already processed (prevents double-click / re-confirm duplication);
-      if (txn.refId ? y.processedTxnIds.includes(txn.refId) : y.processedTxnHashes.includes(txn.hash)) return prev;
+
