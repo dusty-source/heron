@@ -581,7 +581,6 @@ export async function extractTextFromPdf(
     }
   }
 
-  // For each row, group items by X (columns) with overlap tolerance
   // For each row, group items by X (columns) with actual width-based overlap
   const table: string[][] = [];
   for (const row of rows) {
@@ -605,6 +604,17 @@ export async function extractTextFromPdf(
     }
     const rowCells = columns.map(col => col.texts.join(' ').trim());
     table.push(rowCells);
+  }
+
+  // Ensure all rows have the same number of columns by padding with empty strings
+  // This prevents column index misalignment when empty cells are omitted during extraction
+  if (table.length > 0) {
+    const maxCols = Math.max(...table.map(row => row.length));
+    for (const row of table) {
+      while (row.length < maxCols) {
+        row.push('');
+      }
+    }
   }
 
   return table;
