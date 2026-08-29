@@ -45,7 +45,10 @@ const MONTH_NAMES: Record<string, number> = {
 
 // ── hashing (FNV-1a) ────────────────────────────────────────────
 export function normalizeRef(raw: string): string {
-  return String(raw || '').replace(/^(up|upi|[A-Z]{2,5}\d*)/i, '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+  return String(raw || '')
+    .replace(/^(upi|utr|rrn|txn|ref|chq|cheque|serial|ack|id)/i, '') // only known prefixes
+    .replace(/[^A-Z0-9]/gi, '')
+    .toUpperCase();
 }
 
 export function txnHash(dateISO: string, amount: number, direction: Direction, description: string): string {
@@ -158,8 +161,8 @@ export function parseCSV(text: string): string[][] {
 const RX = {
   date: /date|posted|value\s*dt|txn/i,
   desc: /narration|description|particulars|details|remarks|label|payee|merchant|info|transaction/i,
-  credit: /credit|deposit|received/i,
-  debit: /debit|withdrawal|paid|spent/i,
+  credit: /credit|deposit|received|cr\b|deposit/i,   // added \bcr\b
+  debit: /debit|withdrawal|paid|spent|dr\b|withdrawal/i, // added \bdr\b
   balance: /balance|\bbal\b/i,
   ref: /ref|utr|rrn|txns?id|reference|chq|cheque|serial/i,
 };
@@ -180,7 +183,7 @@ function isAmountCell(v: string): boolean {
 export function detectColumns(allRows: string[][]): ColumnDetection | null {
   if (allRows.length === 0) return null;
   // 1) header-based mapping
-  for (let h = 0; h < Math.min(allRows.length, 10); h++) {
+  for (let h = 0; h < Math.min(allRows.length, 15); h++) {
     const row = allRows[h];
     if (!row.some(c => RX.date.test(c))) continue;
     const p = emptyProfile();
@@ -284,10 +287,38 @@ export function rowsToTxns(rows: string[][], p: ColumnProfile, order: DateOrder)
     let amount = 0;
     const cr = p.creditIdx >= 0 ? parseAmount(r[p.creditIdx] || '') : null;
     const dr = p.debitIdx >= 0 ? parseAmount(r[p.debitIdx] || '') : null;
+    // Primary: use separate credit and debit columns if available
     if (cr != null && cr > 0) { direction = 'credit'; amount = cr; }
     else if (dr != null && dr > 0) { direction = 'debit'; amount = dr; }
     else if (cr != null && dr != null && cr < 0) { direction = 'debit'; amount = -cr; }
     else if (cr != null && dr != null && dr < 0) { direction = 'credit'; amount = -dr; }
+    
+    // Fallback: single column with sign and/or description markers
+    if (!direction) {
+      let singleIdx = -1;
+      if (p.creditIdx >= 0 && p.debitIdx === -1) singleIdx = p.creditIdx;
+      else if (p.debitIdx >= 0 && p.creditIdx === -1) singleIdx = p.debitIdx;
+      if (singleIdx !== -1) {
+        const amt = parseAmount(r[singleIdx] || '');
+        if (amt !== null && amt !== 0) {
+          const desc = p.descIdx >= 0 ? (r[p.descIdx] || '').toLowerCase() : '';
+          const hasCr = /\bcr\b|\bcredit\b/.test(desc);
+          const hasDr = /\bdr\b|\bdebit\b/.test(desc);
+          if (amt < 0) {
+            // Negative amount: interpret based on description
+            if (hasCr) { direction = 'credit'; amount = -amt; }
+            else if (hasDr) { direction = 'debit'; amount = -amt; }
+            else { direction = 'credit'; amount = -amt; } // default: negative as credit (common)
+          } else {
+            // Positive amount
+            if (hasDr) { direction = 'debit'; amount = amt; }
+            else if (hasCr) { direction = 'credit'; amount = amt; }
+            else { direction = 'credit'; amount = amt; } // default: positive as credit
+          }
+        }
+      }
+    }
+
     if (!direction || amount <= 0) continue;
     const dateISO = toISO(d);
     const refRaw = p.refIdx >= 0 ? r[p.refIdx] || '' : '';
@@ -315,66 +346,47 @@ export function parseCsvStatement(text: string, order: DateOrder): { txns: Parse
   return { txns: rowsToTxns(rows, detection.profile, order), detection };
 }
 
-// ── PDF text -> transactions ────────────────────────────────────
-function isAmountToken(t: string): boolean {
-  if (!t || isDateLike(t)) return false;
-  if (!/\d/.test(t)) return false;
-  if (/^\d{6,}$/.test(t.replace(/\D/g, ''))) return false; // long ref numbers
-  return parseAmount(t) !== null && (/[.,]/.test(t) || /^\(?\d{1,7}(\.\d{2})?\)?$/.test(t));
+export async function parsePdfStatement(
+  data: ArrayBuffer,
+  order: DateOrder,
+  password?: string
+): Promise<{ txns: ParsedTxn[]; detection: ColumnDetection | null }> {
+  const rows = await extractTextFromPdf(data, password);
+  if (rows.length === 0) return { txns: [], detection: null };
+  return parseStatementLines(rows, order);
 }
 
-export function parseStatementLines(lines: string[], order: DateOrder): { txns: ParsedTxn[]; detection: ColumnDetection } {
-  const txns: ParsedTxn[] = [];
-  for (const line of lines) {
-    const tokens = line.trim().split(/\s{2,}|\s+/).filter(Boolean);
-    if (tokens.length < 2) continue;
-    let dateTokIdx = -1;
-    for (let i = 0; i < Math.min(tokens.length, 4); i++) {
-      if (isDateLike(tokens[i])) { dateTokIdx = i; break; }
-    }
-    if (dateTokIdx === -1) continue;
-    const d = tryParseDate(tokens[dateTokIdx], order);
-    if (!d) continue;
-    const rest = tokens.slice(dateTokIdx + 1);
-    const amounts = rest.filter(isAmountToken).map(t => Math.abs(parseAmount(t) || 0)).filter(v => v > 0);
-    if (amounts.length === 0) continue;
-    const joined = line.toLowerCase();
-    let direction: Direction = /\bcr\b|\bcredit\b|\bdeposit\b/.test(joined) ? 'credit' : 'debit';
-    if (!/\bcr\b|\bdr\b|\bcredit\b|\bdebit\b/.test(joined)) {
-      // two amounts: [amount, balance]; pick the one that is NOT explainable as balance —
-      // heuristic: with a balance column the first amount is the transaction.
-      const rawTokens = rest.filter(isAmountToken);
-      const firstRaw = (rawTokens[0] ?? '').trim();
-      const isNegative = /^\(|^-/.test(firstRaw);
-      direction = isNegative ? 'credit' : 'debit';
-    }
-    const amount = amounts[0];
-    const descTokens = rest.filter(t => !isAmountToken(t));
-    const desc = descTokens.join(' ').replace(/\s+/g, ' ').trim();
-    const dateISO = toISO(d);
-    txns.push({
-      id: '',
-      hash: txnHash(dateISO, amount, direction, desc),
-      dateISO,
-      amount,
-      direction,
-      description: desc || 'Statement entry',
-      monthIndex: d.m - 1,
-      yearHint: d.y,
-      source: 'statement',
-    });
+// ── PDF text -> transactions ────────────────────────────────────
+
+
+export function parseStatementLines(
+  rows: string[][],
+  order: DateOrder
+): { txns: ParsedTxn[]; detection: ColumnDetection | null } {
+  const detection = detectColumns(rows);
+  if (!detection) {
+    return { txns: [], detection: null };
   }
-  return { txns, detection: { profile: emptyProfile(), usedHeaders: false, hasBalance: false, layoutKey: fnv(`pdf-${lines.length}`) } };
+  const txns = rowsToTxns(rows, detection.profile, order);
+  return { txns, detection };
 }
 
 // ── PDF text extraction (pdf.js, lazily imported) ───────────────
-export async function extractTextFromPdf(data: ArrayBuffer, password?: string): Promise<string[]> {
+export async function extractTextFromPdf(
+  data: ArrayBuffer,
+  password?: string
+): Promise<string[][]> {
   const pdfjs = await import('pdfjs-dist');
   const PdfWorker = (await import('pdfjs-dist/build/pdf.worker.min.mjs?worker')).default;
   pdfjs.GlobalWorkerOptions.workerPort = new PdfWorker();
+
   let doc;
   try {
-    doc = await pdfjs.getDocument({ data: new Uint8Array(data), password: password || undefined, isEvalSupported: false }).promise;
+    doc = await pdfjs.getDocument({
+      data: new Uint8Array(data),
+      password: password || undefined,
+      isEvalSupported: false,
+    }).promise;
   } catch (err: unknown) {
     const e = err as { name?: string; code?: number };
     if (e?.name === 'PasswordException') {
@@ -382,23 +394,75 @@ export async function extractTextFromPdf(data: ArrayBuffer, password?: string): 
     }
     throw err;
   }
-  const lines: string[] = [];
+
+  // Collect all text items with positions
+  const allItems: { x: number; y: number; str: string; width: number; height: number }[] = [];
+
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
     const content = await page.getTextContent();
-    // group text items into visual rows by y-coordinate
-    const rowsMap = new Map<number, { x: number; str: string }[]>();
-    for (const item of content.items as unknown as { str: string; transform: number[] }[]) {
+
+    for (const item of content.items as unknown as { str: string; transform: number[]; width: number; height: number }[]) {
       if (!item.str || !item.str.trim()) continue;
-      const y = Math.round(item.transform[5] / 2) * 2;
-      if (!rowsMap.has(y)) rowsMap.set(y, []);
-      rowsMap.get(y)!.push({ x: item.transform[4], str: item.str });
-    }
-    const ys = [...rowsMap.keys()].sort((a, b) => b - a);
-    for (const y of ys) {
-      const parts = rowsMap.get(y)!.sort((a, b) => a.x - b.x).map(i => i.str.trim());
-      lines.push(parts.join('  '));
+      const [x, y] = [item.transform[4], item.transform[5]];
+      allItems.push({
+        x,
+        y,
+        str: item.str.trim(),
+        width: item.width || 0,
+        height: item.height || 0,
+      });
     }
   }
-  return lines;
+
+  if (allItems.length === 0) return [];
+
+  // Group by Y (rows) with dynamic tolerance based on median height
+  const sortedByY = [...allItems].sort((a, b) => a.y - b.y);
+  const heights = sortedByY.map(i => i.height).filter(h => h > 0);
+  const medianHeight = heights.length > 0 ? heights[Math.floor(heights.length / 2)] : 10;
+  const tolerance = Math.max(medianHeight * 0.3, 2);
+
+  const rows: { y: number; items: typeof allItems }[] = [];
+  for (const item of sortedByY) {
+    let found = false;
+    for (const row of rows) {
+      if (Math.abs(item.y - row.y) <= tolerance) {
+        row.items.push(item);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      rows.push({ y: item.y, items: [item] });
+    }
+  }
+
+  // For each row, group items by X (columns) with overlap tolerance
+  // For each row, group items by X (columns) with actual width-based overlap
+  const table: string[][] = [];
+  for (const row of rows) {
+    const sortedItems = row.items.sort((a, b) => a.x - b.x);
+    const columns: { x: number; maxRight: number; texts: string[] }[] = [];
+    for (const item of sortedItems) {
+      const itemRight = item.x + item.width;
+      let merged = false;
+      for (const col of columns) {
+        // If this item overlaps horizontally with the column, merge it
+        if (item.x <= col.maxRight + 2) { // 2px tolerance
+          col.texts.push(item.str);
+          col.maxRight = Math.max(col.maxRight, itemRight);
+          merged = true;
+          break;
+        }
+      }
+      if (!merged) {
+        columns.push({ x: item.x, maxRight: itemRight, texts: [item.str] });
+      }
+    }
+    const rowCells = columns.map(col => col.texts.join(' ').trim());
+    table.push(rowCells);
+  }
+
+  return table;
 }
