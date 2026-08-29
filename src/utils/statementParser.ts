@@ -556,14 +556,26 @@ export function validateBalanceSheet(
     }
   }
 
-  const firstBalance = parseAmount(rows[0][p.balanceIdx] || '');
-  const lastBalance = parseAmount(rows[rows.length - 1][p.balanceIdx] || '');
+  // Find first and last DATA rows with a parseable balance (skips header rows
+  // where the balance column contains the word "Balance", not a number)
+  let firstIdx = -1;
+  let lastIdx = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseAmount(rows[i][p.balanceIdx] || '') !== null) {
+      if (firstIdx === -1) firstIdx = i;
+      lastIdx = i;
+    }
+  }
+  if (firstIdx === -1 || lastIdx === -1) return result;
+
+  const firstBalance = parseAmount(rows[firstIdx][p.balanceIdx] || '');
+  const lastBalance = parseAmount(rows[lastIdx][p.balanceIdx] || '');
   if (firstBalance === null || lastBalance === null) return result;
 
-  // First row's balance is AFTER its own transaction, so derive opening balance:
-  // opening = first_balance - deposit + withdrawal (of the first row)
-  const firstDeposit = p.creditIdx >= 0 ? parseAmount(rows[0][p.creditIdx] || '') ?? 0 : 0;
-  const firstWithdrawal = p.debitIdx >= 0 ? parseAmount(rows[0][p.debitIdx] || '') ?? 0 : 0;
+  // First data row's balance is AFTER its own transaction, so derive opening:
+  // opening = first_balance - deposit + withdrawal (of that row)
+  const firstDeposit = p.creditIdx >= 0 ? parseAmount(rows[firstIdx][p.creditIdx] || '') ?? 0 : 0;
+  const firstWithdrawal = p.debitIdx >= 0 ? parseAmount(rows[firstIdx][p.debitIdx] || '') ?? 0 : 0;
   const opening = firstBalance - Math.max(firstDeposit, 0) + Math.max(firstWithdrawal, 0);
 
   result.openingBalance = opening;
@@ -629,86 +641,131 @@ export async function extractTextFromPdf(
     throw err;
   }
 
-  // Collect all text items with positions
-  const allItems: { x: number; y: number; str: string; width: number; height: number }[] = [];
+  // Collect text items per page (with positions) — pages processed separately
+  // so y-coordinates from different pages never interleave.
+  type PdfItem = { x: number; y: number; str: string; width: number; height: number };
+  const pages: PdfItem[][] = [];
 
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
     const content = await page.getTextContent();
-
+    const items: PdfItem[] = [];
     for (const item of content.items as unknown as { str: string; transform: number[]; width: number; height: number }[]) {
       if (!item.str || !item.str.trim()) continue;
-      const [x, y] = [item.transform[4], item.transform[5]];
-      allItems.push({
-        x,
-        y,
+      items.push({
+        x: item.transform[4],
+        y: item.transform[5],
         str: item.str.trim(),
         width: item.width || 0,
         height: item.height || 0,
       });
     }
+    if (items.length > 0) pages.push(items);
   }
 
-  if (allItems.length === 0) return [];
+  if (pages.length === 0) return [];
 
-  // Group by Y (rows) with dynamic tolerance based on median height
-  const sortedByY = [...allItems].sort((a, b) => a.y - b.y);
-  const heights = sortedByY.map(i => i.height).filter(h => h > 0);
-  const medianHeight = heights.length > 0 ? heights[Math.floor(heights.length / 2)] : 10;
-  const tolerance = Math.max(medianHeight * 0.3, 2);
-
-  const rows: { y: number; items: typeof allItems }[] = [];
-  for (const item of sortedByY) {
-    let found = false;
-    for (const row of rows) {
-      if (Math.abs(item.y - row.y) <= tolerance) {
-        row.items.push(item);
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      rows.push({ y: item.y, items: [item] });
-    }
-  }
-
-  // For each row, group items by X (columns) with actual width-based overlap
+  type Cell = { x: number; right: number; str: string };
+  let refCells: Cell[] | null = null; // header layout, reused across pages
   const table: string[][] = [];
-  for (const row of rows) {
-    const sortedItems = row.items.sort((a, b) => a.x - b.x);
-    const columns: { x: number; maxRight: number; texts: string[] }[] = [];
-    for (const item of sortedItems) {
-      const itemRight = item.x + item.width;
-      let merged = false;
-      for (const col of columns) {
-        // If this item overlaps horizontally with the column, merge it
-        if (item.x <= col.maxRight + 2) { // 2px tolerance
-          col.texts.push(item.str);
-          col.maxRight = Math.max(col.maxRight, itemRight);
-          merged = true;
+
+  for (const pageItems of pages) {
+    // Group by Y (rows) with dynamic tolerance based on median height
+    const sortedByY = [...pageItems].sort((a, b) => a.y - b.y);
+    const heights = sortedByY.map(i => i.height).filter(h => h > 0);
+    const medianHeight = heights.length > 0 ? heights[Math.floor(heights.length / 2)] : 10;
+    const yTolerance = Math.max(medianHeight * 0.3, 2);
+
+    const yRows: { y: number; items: PdfItem[] }[] = [];
+    for (const item of sortedByY) {
+      let found = false;
+      for (const row of yRows) {
+        if (Math.abs(item.y - row.y) <= yTolerance) {
+          row.items.push(item);
+          found = true;
           break;
         }
       }
-      if (!merged) {
-        columns.push({ x: item.x, maxRight: itemRight, texts: [item.str] });
+      if (!found) yRows.push({ y: item.y, items: [item] });
+    }
+
+    // Merge items that sit next to each other into one cell (same visual cell)
+    const gapTol = Math.max(3, medianHeight * 0.4);
+    const rawRows: Cell[][] = yRows.map(row => {
+      const sorted = [...row.items].sort((a, b) => a.x - b.x);
+      const cells: Cell[] = [];
+      for (const item of sorted) {
+        const right = item.x + item.width;
+        const last = cells[cells.length - 1];
+        if (last && item.x <= last.right + gapTol) {
+          last.str += ' ' + item.str;
+          last.right = Math.max(last.right, right);
+        } else {
+          cells.push({ x: item.x, right, str: item.str });
+        }
+      }
+      return cells;
+    });
+
+    // Establish column layout from the header row (contains "Date")
+    if (!refCells) {
+      for (const cells of rawRows) {
+        if (cells.some(c => /date|posted|value\s*dt|txn/i.test(c.str))) {
+          refCells = cells;
+          break;
+        }
       }
     }
-    const rowCells = columns.map(col => col.texts.join(' ').trim());
-    table.push(rowCells);
-  }
 
-  // Ensure all rows have the same number of columns by padding with empty strings
-  // This prevents column index misalignment when empty cells are omitted during extraction
-  if (table.length > 0) {
-    const maxCols = Math.max(...table.map(row => row.length));
-    for (const row of table) {
-      while (row.length < maxCols) {
-        row.push('');
+    const numCols = refCells ? refCells.length : Math.max(...rawRows.map(r => r.length), 1);
+    const centers = refCells ? refCells.map(c => (c.x + c.right) / 2) : [];
+
+    // Assign a cell to the header column it overlaps most (or nearest centre)
+    const assignCol = (cell: Cell): number => {
+      if (!refCells) return -1;
+      let best = 0;
+      let bestOverlap = -1;
+      for (let i = 0; i < refCells.length; i++) {
+        const rc = refCells[i];
+        const overlap = Math.min(cell.right, rc.right) - Math.max(cell.x, rc.x);
+        if (overlap > bestOverlap) {
+          bestOverlap = overlap;
+          best = i;
+        }
       }
+      if (bestOverlap <= 0) {
+        const cCenter = (cell.x + cell.right) / 2;
+        let bestDist = Infinity;
+        for (let i = 0; i < centers.length; i++) {
+          const d = Math.abs(cCenter - centers[i]);
+          if (d < bestDist) { bestDist = d; best = i; }
+        }
+      }
+      return best;
+    };
+
+    for (const cells of rawRows) {
+      const rowArr: string[] = new Array(numCols).fill('');
+      cells.forEach((cell, idx) => {
+        const col = refCells ? assignCol(cell) : Math.min(idx, numCols - 1);
+        if (col >= 0 && col < numCols) {
+          rowArr[col] = rowArr[col] ? `${rowArr[col]} ${cell.str}` : cell.str;
+        }
+      });
+      table.push(rowArr);
     }
   }
 
-  // ── Merge multi-line transactions ──
+  // ── Merge multi-line transactions into single rows ──
+  return mergeMultilineRows(table);
+}
+
+/**
+ * Combines continuation lines (rows without a date in the date column) into
+ * their parent transaction row. Multi-line descriptions are joined with
+ * spaces; amount cells fill empty amount columns of the parent row.
+ */
+export function mergeMultilineRows(table: string[][]): string[][] {
   // Find the date column (first column that mostly contains dates in the top rows)
   let dateColIdx = -1;
   const scanLimit = Math.min(table.length, 15);
@@ -720,33 +777,30 @@ export async function extractTextFromPdf(
     if (dateCount >= 2) { dateColIdx = c; break; }
   }
 
-  if (dateColIdx !== -1) {
-    const mergedTable: string[][] = [];
-    for (const row of table) {
-      const firstCell = (row[dateColIdx] || '').trim();
-      const isTxnStart = isDateLike(firstCell);
-      if (isTxnStart || mergedTable.length === 0) {
-        mergedTable.push([...row]);
-      } else {
-        // Continuation line: merge into previous transaction row
-        const prev = mergedTable[mergedTable.length - 1];
-        for (let c = 0; c < row.length; c++) {
-          const cell = (row[c] || '').trim();
-          if (!cell) continue;
-          if (c === dateColIdx) continue; // skip date col for continuation
-          if (parseAmount(cell) !== null && isAmountCell(cell) && !prev[c]) {
-            // Amount-only continuation line: fill missing amount column
-            prev[c] = cell;
-          } else {
-            // Text: append to description column
-            prev[c] = prev[c] ? `${prev[c]} ${cell}` : cell;
-          }
+  if (dateColIdx === -1) return table;
+
+  const mergedTable: string[][] = [];
+  for (const row of table) {
+    const firstCell = (row[dateColIdx] || '').trim();
+    const isTxnStart = isDateLike(firstCell);
+    if (isTxnStart || mergedTable.length === 0) {
+      mergedTable.push([...row]);
+    } else {
+      // Continuation line: merge into previous transaction row
+      const prev = mergedTable[mergedTable.length - 1];
+      for (let c = 0; c < row.length; c++) {
+        const cell = (row[c] || '').trim();
+        if (!cell) continue;
+        if (c === dateColIdx) continue; // skip date col for continuation
+        if (parseAmount(cell) !== null && isAmountCell(cell) && !prev[c]) {
+          // Amount-only continuation line: fill missing amount column
+          prev[c] = cell;
+        } else {
+          // Text: append to description column
+          prev[c] = prev[c] ? `${prev[c]} ${cell}` : cell;
         }
       }
     }
-    table.length = 0;
-    table.push(...mergedTable);
   }
-
-  return table;
+  return mergedTable;
 }
