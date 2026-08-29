@@ -61,6 +61,12 @@ html, body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Momentum (touch) scrolling for overlays/bottom sheets on iOS. */
+.scroll-touch {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
 .scroll-container::-webkit-scrollbar {
   display: none;
 }

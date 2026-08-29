@@ -182,10 +182,10 @@ function BottomSheet({ isOpen, onClose, title, children }: { isOpen: boolean; on
           onClick={onClose}>
           <motion.div initial={{ y: '110%' }} animate={{ y: 0 }} exit={{ y: '110%' }}
             transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-            className="bottom-sheet w-full rounded-t-3xl p-5 pb-10 max-w-lg"
+            className="bottom-sheet w-full rounded-t-3xl p-5 pb-10 max-w-lg max-h-[88dvh] flex flex-col overflow-y-auto scroll-touch"
             onClick={e => e.stopPropagation()}>
-            <div className="w-10 h-1 bg-ios-text-secondary/25 rounded-full mx-auto mb-5" />
-            <h3 className="text-lg font-bold text-ios-text mb-4">{title}</h3>
+            <div className="w-10 h-1 bg-ios-text-secondary/25 rounded-full mx-auto mb-5 shrink-0" />
+            <h3 className="text-lg font-bold text-ios-text mb-4 shrink-0">{title}</h3>
             {children}
           </motion.div>
         </motion.div>
@@ -854,7 +854,7 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
               </div>
               <span className="text-[10px] text-ios-text-secondary">{rows.length} total</span>
             </div>
-            <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+            <div className="space-y-2 flex-1 min-h-0 overflow-y-auto overscroll-contain scroll-touch">
               {rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).length > 0 ? (
                 rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((r, i) => (
                 <div key={r.txn.id || r.txn.hash} className={`p-2.5 rounded-xl border ${r.dupe || r.yearMismatch ? 'opacity-50 border-ios-border/10' : 'border-ios-border/20'} bg-ios-surface-2`}>
