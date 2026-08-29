@@ -223,7 +223,7 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
       else if (RX.credit.test(c) && p.creditIdx === -1) p.creditIdx = i;
       else if (RX.debit.test(c) && p.debitIdx === -1) p.debitIdx = i;
     });
-    if (p.dateIdx !== -1 && (p.creditIdx !== -1 || p.debitIdx !== -1)) {
+    if (p.dateIdx !== -1 && p.creditIdx !== -1 && p.debitIdx !== -1) {
       return { profile: p, usedHeaders: true, hasBalance: p.balanceIdx !== -1, layoutKey: fnv(`h${p.dateIdx}-${p.descIdx}-${p.creditIdx}-${p.debitIdx}-${p.balanceIdx}-${p.refIdx}`) };
     }
   }
@@ -310,7 +310,7 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
     }
   }
 
-  // 3) If we have both distinct columns, use them
+    // 3) If we have both distinct columns, use them
   if (crCol !== -1 && drCol !== -1 && crCol !== drCol) {
     profile.creditIdx = crCol;
     profile.debitIdx = drCol;
