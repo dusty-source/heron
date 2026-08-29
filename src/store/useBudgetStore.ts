@@ -420,7 +420,7 @@ export function useBudgetStore() {
       const y = prev.years[prev.activeYear];
       if (!y) return prev;
       const entries = [...(y[section] as DataEntry[])];
-      const id = `${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+      const id = `${name.toLowerCase().replace(/\s+/g, '-')}-${now()}`;
       const ts = now();
       entries.push({ id, name, values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts });
       // A new debt row needs a paired debtMeta so the payoff simulator can track it.
@@ -430,7 +430,7 @@ export function useBudgetStore() {
       const updated = { ...y, [section]: entries, debtMeta: newMeta, modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'add', section: String(section), entryName: name, timestamp: ts };
+      const audit: AuditEntry = { id: `audit-${now()}`, action: 'add', section: String(section), entryName: name, timestamp: ts };
       auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
@@ -451,7 +451,7 @@ export function useBudgetStore() {
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       if (target) {
         const auditY = newState.years[newState.activeYear];
-        const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'delete', section: String(section), entryName: target.name, timestamp: now() };
+        const audit: AuditEntry = { id: `audit-${now()}`, action: 'delete', section: String(section), entryName: target.name, timestamp: now() };
         auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
       }
       return newState;
@@ -568,7 +568,7 @@ export function useBudgetStore() {
         !pendingSet.has(txnKey(t))
       );
       if (fresh.length === 0) return prev;
-      const withIds = fresh.map((t, i) => ({ ...t, id: `txn-${Date.now()}-${i}` }));
+      const withIds = fresh.map((t, i) => ({ ...t, id: `txn-${now()}-${i}` }));
       const updated = { ...y, pendingTxns: [...y.pendingTxns, ...withIds].slice(0, 1000), modifiedAt: now() };
       return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
     });
@@ -582,7 +582,7 @@ export function useBudgetStore() {
       const entries = [...(y[section] as DataEntry[])];
       let targetId = entryId;
       if (!targetId) {
-        targetId = `${(newName || 'imported').toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+        targetId = `${(newName || 'imported').toLowerCase().replace(/\s+/g, '-')}-${now()}`;
         entries.push({ id: targetId, name: (newName || 'IMPORTED').toUpperCase(), values: new Array(12).fill(0), recurring: 'none', createdAt: ts, modifiedAt: ts });
       }
       const idx = entries.findIndex(e => e.id === targetId);
@@ -597,7 +597,7 @@ export function useBudgetStore() {
       const updated = { ...base, remarks: deriveRemarksForMonth(base, txn.monthIndex), modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'add', section: String(section), entryName: entries[idx].name, newValue: `${txn.direction} ${txn.amount} (${txn.dateISO})`, timestamp: ts };
+      const audit: AuditEntry = { id: `audit-${now()}`, action: 'add', section: String(section), entryName: entries[idx].name, newValue: `${txn.direction} ${txn.amount} (${txn.dateISO})`, timestamp: ts };
       auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
@@ -662,7 +662,7 @@ export function useBudgetStore() {
       if (!y || !name.trim()) return prev;
       const ts = now();
       const clean = name.trim().toUpperCase();
-      const pid = `${clean.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+      const pid = `${clean.toLowerCase().replace(/\s+/g, '-')}-${now()}`;
       const activeYearNum = parseInt(prev.activeYear, 10);
       const monthIdx = activeYearNum === new Date().getFullYear() ? new Date().getMonth() : 0;
       const values = new Array(12).fill(0);
@@ -678,7 +678,7 @@ export function useBudgetStore() {
       const updated = { ...y, debtProgression: progression, debtMeta: meta, debtRepayment: repayment, modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'add', section: 'debt', entryName: clean, newValue: `balance ${opts.balance} @ ${opts.rate}% EMI ${opts.emi}`, timestamp: ts };
+      const audit: AuditEntry = { id: `audit-${now()}`, action: 'add', section: 'debt', entryName: clean, newValue: `balance ${opts.balance} @ ${opts.rate}% EMI ${opts.emi}`, timestamp: ts };
       auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
@@ -699,7 +699,7 @@ export function useBudgetStore() {
       const targetName = `${meta.name} EMI`;
       let idx = repayment.findIndex(e => e.name === targetName);
       if (idx === -1) {
-        repayment.push({ id: `${debtId}-emi-${Date.now()}`, name: targetName, values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts });
+        repayment.push({ id: `${debtId}-emi-${now()}`, name: targetName, values: new Array(12).fill(0), recurring: 'monthly', createdAt: ts, modifiedAt: ts });
         idx = repayment.length - 1;
       }
       for (let m = monthIdx; m < 12; m++) {
@@ -757,7 +757,7 @@ export function useBudgetStore() {
       const updated = { ...y, [section]: entries, modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'edit', section: String(section), entryName: entry.name, oldValue: `recurring:${entries[idx].recurring || 'none'}`, newValue: `recurring:${frequency}`, timestamp: now() };
+      const audit: AuditEntry = { id: `audit-${now()}`, action: 'edit', section: String(section), entryName: entry.name, oldValue: `recurring:${entries[idx].recurring || 'none'}`, newValue: `recurring:${frequency}`, timestamp: now() };
       auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
@@ -789,7 +789,7 @@ export function useBudgetStore() {
       const updated = { ...base4, remarks: deriveRemarksForYear(base4), modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'edit', section: 'householdExpenses', entryName: 'Recurring Autopilot', oldValue: '0', newValue: `Applied to ${MONTHS_12[monthIndex]}`, timestamp: now() };
+      const audit: AuditEntry = { id: `audit-${now()}`, action: 'edit', section: 'householdExpenses', entryName: 'Recurring Autopilot', oldValue: '0', newValue: `Applied to ${MONTHS_12[monthIndex]}`, timestamp: now() };
       auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
@@ -916,13 +916,13 @@ export function useBudgetStore() {
       const y = prev.years[prev.activeYear];
       if (!y) return prev;
       const entries = [...y.taxShieldEntries];
-      const id = `tax-${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+      const id = `tax-${name.toLowerCase().replace(/\s+/g, '-')}-${now()}`;
       const ts = now();
       entries.push({ id, name, category, values: new Array(12).fill(0), limit, createdAt: ts, modifiedAt: ts });
       const updated = { ...y, taxShieldEntries: entries, modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      auditY.auditLog = [{ id: `audit-${Date.now()}`, action: 'add', section: 'taxShield', entryName: name, timestamp: ts }, ...auditY.auditLog].slice(0, 100);
+      auditY.auditLog = [{ id: `audit-${now()}`, action: 'add', section: 'taxShield', entryName: name, timestamp: ts }, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
   }, []);
@@ -1018,7 +1018,7 @@ export function useBudgetStore() {
       const updated = { ...base5, remarks: deriveRemarksForYear(base5), modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      auditY.auditLog = [{ id: `audit-${Date.now()}`, action: 'add', section: 'windfall', entryName: `Windfall Allocation`, newValue: `S:${toSavings} H:${toHousehold} D:${toDebt}`, timestamp: ts }, ...auditY.auditLog].slice(0, 100);
+      auditY.auditLog = [{ id: `audit-${now()}`, action: 'add', section: 'windfall', entryName: `Windfall Allocation`, newValue: `S:${toSavings} H:${toHousehold} D:${toDebt}`, timestamp: ts }, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
   }, []);
@@ -1139,7 +1139,7 @@ const addSharedExpense = useCallback((name: string, amount: number, monthIndex: 
     const y = prev.years[prev.activeYear];
     if (!y) return prev;
     const shared = [...y.familySync.sharedExpenses];
-    shared.unshift({ id: `shared-${Date.now()}`, name, amount, monthIndex, partner, timestamp: now() });
+    shared.unshift({ id: `shared-${now()}`, name, amount, monthIndex, partner, timestamp: now() });
     const updated = { ...y, familySync: { ...y.familySync, sharedExpenses: shared.slice(0, 50) }, modifiedAt: now() };
     return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
   });
@@ -1153,7 +1153,7 @@ const updateNoSpendStreak = useCallback(() => {
     const fs = y.familySync;
     let streak = fs.noSpendStreak;
     if (fs.lastNoSpendDate !== today) {
-      streak = (fs.lastNoSpendDate === new Date(Date.now() - 86400000).toISOString().split('T')[0]) ? streak + 1 : 1;
+      streak = (fs.lastNoSpendDate === new Date(new Date(now()).getTime() - 86400000).toISOString().split('T')[0]) ? streak + 1 : 1;
     }
     const updated = { ...y, familySync: { ...fs, noSpendStreak: streak, lastNoSpendDate: today }, modifiedAt: now() };
     return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
@@ -1213,12 +1213,12 @@ const applySyncPayload = useCallback((encoded: string) => {
         let entry = household.find(e => e.name === pe.name);
         if (!entry) {
           // Partner tracks an expense category we do not have yet — adopt it.
-          entry = { id: `sync-${pe.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`, name: pe.name, values: new Array(12).fill(0), recurring: 'none', createdAt: now(), modifiedAt: now() };
+          entry = { id: `sync-${pe.name.toLowerCase().replace(/\s+/g, '-')}-${now()}`, name: pe.name, values: new Array(12).fill(0), recurring: 'none', createdAt: now(), modifiedAt: now() };
           household.push(entry);
         }
         pe.values.forEach((v, mi) => {
           if (v > 0 && entry && entry.values[mi] !== v) {
-            shared.push({ id: `sync-${Date.now()}-${mi}`, name: pe.name, amount: v, monthIndex: mi, partner: payload.partnerName, timestamp: payload.timestamp });
+            shared.push({ id: `sync-${now()}-${mi}`, name: pe.name, amount: v, monthIndex: mi, partner: payload.partnerName, timestamp: payload.timestamp });
             // Adopt the partner number where we have not recorded one; keep ours otherwise.
             if (entry.values[mi] === 0) entry.values[mi] = v;
           }
@@ -1548,3 +1548,6 @@ function sumAll2Month(y: YearData, m: number, section: keyof YearData): number {
   updateCoachSettings,    
   };
 }
+
+      // GUARD: skip if already processed (prevents double-click / re-confirm duplication);
+      if (txn.refId ? y.processedTxnIds.includes(txn.refId) : y.processedTxnHashes.includes(txn.hash)) return prev;
