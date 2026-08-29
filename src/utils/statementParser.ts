@@ -241,7 +241,10 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
   const numericCols: number[] = [];
   for (let i = 0; i < width; i++) {
     if (i === dateIdx) continue;
-    if (amtCount[i] >= 1 && nonEmpty[i] > 0 && amtCount[i] / nonEmpty[i] >= 0.8) numericCols.push(i);
+    // Require at least 2 valid amounts and that at least 50% of non-empty cells are amounts
+    if (amtCount[i] >= 2 && (nonEmpty[i] === 0 || amtCount[i] / nonEmpty[i] >= 0.5)) {
+      numericCols.push(i);
+    }
   }
   let descIdx = -1, bestLen = 0;
   for (let i = 0; i < width; i++) {
@@ -312,26 +315,30 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
     profile.creditIdx = crCol;
     profile.debitIdx = drCol;
   } else {
-    // 4) Heuristic: exclude the most balance‑like column and pick the first two numeric columns
-    const balanceCandidate = findBalanceColumn(dataRows, numericCols);
-    const candidates = numericCols.filter(i => i !== balanceCandidate);
-    if (candidates.length >= 2) {
-      profile.creditIdx = candidates[0];
-      profile.debitIdx = candidates[1];
-    } else if (candidates.length === 1) {
-      // Only one amount column → use it for credit, debit will be inferred by description/sign
-      profile.creditIdx = candidates[0];
-      profile.debitIdx = -1;
-    } else if (numericCols.length >= 2) {
-      // fallback to first two if excluding balance failed
+    // 4) Heuristic: decide based on the number of numeric columns
+    if (numericCols.length === 2) {
+      // Exactly two numeric columns: assume they are credit and debit
       profile.creditIdx = numericCols[0];
       profile.debitIdx = numericCols[1];
-    } else if (numericCols.length === 1) {
-      // Only one numeric column total
-      profile.creditIdx = numericCols[0];
-      profile.debitIdx = -1;
-    } else return null;
-  }
+    } else {
+      // More than 2: try to exclude the balance column
+      const balanceCandidate = findBalanceColumn(dataRows, numericCols);
+      const candidates = numericCols.filter(i => i !== balanceCandidate);
+      if (candidates.length >= 2) {
+        profile.creditIdx = candidates[0];
+        profile.debitIdx = candidates[1];
+      } else if (candidates.length === 1) {
+        profile.creditIdx = candidates[0];
+        profile.debitIdx = -1;
+      } else if (numericCols.length >= 2) {
+        // fallback to first two if excluding balance failed
+        profile.creditIdx = numericCols[0];
+        profile.debitIdx = numericCols[1];
+      } else if (numericCols.length === 1) {
+        profile.creditIdx = numericCols[0];
+        profile.debitIdx = -1;
+      } else return null;
+    }  
 
   return { profile, usedHeaders: false, hasBalance: false, layoutKey: fnv(`m${dateIdx}-${descIdx}-${profile.creditIdx}-${profile.debitIdx}`) };
 }
@@ -365,10 +372,9 @@ export function rowsToTxns(rows: string[][],p: ColumnProfile,order: DateOrder,ha
           const hasCr = /\bcr\b|\bcredit\b/.test(desc);
           const hasDr = /\bdr\b|\bdebit\b/.test(desc);
           if (amt < 0) {
-            // Negative amount: interpret based on description
-            if (hasCr) { direction = 'credit'; amount = -amt; }
-            else if (hasDr) { direction = 'debit'; amount = -amt; }
-            else { direction = 'credit'; amount = -amt; } // default: negative as credit (common)
+            if (hasDr) { direction = 'debit'; amount = -amt; }
+            else if (hasCr) { direction = 'credit'; amount = -amt; }
+            else { direction = 'debit'; amount = -amt; } // default: negative is debit (more common)
           } else {
             // Positive amount
             if (hasDr) { direction = 'debit'; amount = amt; }
