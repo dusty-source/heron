@@ -224,7 +224,28 @@ function fnv(s: string): string {
 
 function isAmountCell(v: string): boolean {
   const t = v.trim();
-  return t !== '' && parseAmount(t) !== null && /\d/.test(t) && !isDateLike(t) && t.replace(/\D/g, '').length <= 12;
+  // Digit ceiling of 9: real amounts fit in 999,999,999 — UPI/UTR reference
+  // fragments are 10–12 digit runs and must never be mistaken for amounts.
+  return t !== '' && parseAmount(t) !== null && /\d/.test(t) && !isDateLike(t) && t.replace(/\D/g, '').length <= 9;
+}
+
+/**
+ * Strict money-token test, stricter than isAmountCell. Used when deciding
+ * whether a continuation line may fill an empty amount column:
+ * - decimal amounts: 60.00 / 1,234.56 / (500.00) / -500.00
+ * - comma-grouped: 1,234
+ * - short pure digits (≤7): 5000
+ * Rejects bare long digit runs (UPI/UTR/phone fragments like 988280622939).
+ */
+function isStrictMoneyToken(v: string): boolean {
+  const t = v.trim();
+  if (!t || !/\d/.test(t)) return false;
+  // UPI/UTR/phone fragments are 10–12 digit runs; real amounts are shorter.
+  if (t.replace(/\D/g, '').length > 9) return false;
+  if (/^[-(]?\d{1,7}[)]?$/.test(t)) return true;                       // short plain integer
+  if (/^[-(]?\d{1,3}(,\d{3})+(\.\d{1,2})?[)]?$/.test(t)) return true;  // comma-grouped
+  if (/^[-(]?\d{1,7}\.\d{1,2}[)]?$/.test(t)) return true;              // decimal
+  return false;
 }
 
 export function detectColumns(allRows: string[][]): ColumnDetection | null {
@@ -416,46 +437,43 @@ export function rowsToTxns(rows: string[][],p: ColumnProfile,order: DateOrder,ha
       const balanceStr = r[p.balanceIdx] || '';
       const balance = parseAmount(balanceStr);
       if (balance !== null && previousBalance !== null) {
-        // Compute expected net change: previousBalance - currentBalance (if balance decreases with debits)
-        // OR currentBalance - previousBalance (if balance increases with credits)
-        const delta1 = previousBalance - balance; // positive means debit (if balance goes down)
-        const delta2 = balance - previousBalance; // positive means credit
-        let expectedDir: Direction | null = null;
-        let expectedAmt = 0;
-        if (Math.abs(delta1) > 0.01 && Math.abs(delta1 - amount) < 0.01) {
-          // delta1 matches the detected amount
-          expectedDir = delta1 > 0 ? 'debit' : 'credit';
-          expectedAmt = Math.abs(delta1);
-        } else if (Math.abs(delta2) > 0.01 && Math.abs(delta2 - amount) < 0.01) {
-          expectedDir = delta2 > 0 ? 'credit' : 'debit';
-          expectedAmt = Math.abs(delta2);
-        }
-        if (expectedDir && expectedAmt > 0) {
-          // If the detected direction/amount differs, we override
-          if (direction !== expectedDir || Math.abs(amount - expectedAmt) > 0.01) {
-            // Try using the other amount column (if both credit and debit columns exist)
-            let alternativeAmount = 0;
-            let alternativeDir: Direction | null = null;
-            if (p.creditIdx >= 0 && p.debitIdx >= 0 && p.creditIdx !== p.debitIdx) {
-              const altCr = p.creditIdx >= 0 ? parseAmount(r[p.creditIdx] || '') : null;
-              const altDr = p.debitIdx >= 0 ? parseAmount(r[p.debitIdx] || '') : null;
-              if (altCr != null && altCr > 0 && Math.abs(altCr - expectedAmt) < 0.01) {
-                alternativeDir = 'credit';
-                alternativeAmount = altCr;
-              } else if (altDr != null && altDr > 0 && Math.abs(altDr - expectedAmt) < 0.01) {
-                alternativeDir = 'debit';
-                alternativeAmount = altDr;
-              }
+        // Signed net change implied by the balance chain (ground truth):
+        // positive delta = credit (balance went up), negative = debit.
+        const delta = balance - previousBalance;
+        const deltaAmt = Math.abs(delta);
+        let corrected = false;
+        if (deltaAmt > 0.01) {
+          if (Math.abs(deltaAmt - amount) < 0.01) {
+            // Parsed amount matches the balance chain — just enforce direction.
+            const expectedDir: Direction = delta > 0 ? 'credit' : 'debit';
+            if (direction !== expectedDir) direction = expectedDir;
+            corrected = true;
+          } else if (p.creditIdx >= 0 && p.debitIdx >= 0 && p.creditIdx !== p.debitIdx) {
+            // Parsed amount does NOT match the chain: try the raw column values
+            // (guards against reference-number pollution inflating the amount).
+            const altCr = parseAmount(r[p.creditIdx] || '');
+            const altDr = parseAmount(r[p.debitIdx] || '');
+            if (altCr != null && altCr > 0 && Math.abs(altCr - deltaAmt) < 0.01) {
+              direction = 'credit';
+              amount = altCr;
+              corrected = true;
+            } else if (altDr != null && altDr > 0 && Math.abs(altDr - deltaAmt) < 0.01) {
+              direction = 'debit';
+              amount = altDr;
+              corrected = true;
+            } else if (deltaAmt <= 999999999) {
+              // Last resort: trust the balance chain outright. The review UI
+              // still lets the user inspect/flip every row before inserting.
+              direction = delta > 0 ? 'credit' : 'debit';
+              amount = deltaAmt;
+              corrected = true;
             }
-            if (alternativeDir && alternativeAmount > 0) {
-              direction = alternativeDir;
-              amount = alternativeAmount;
-            } else {
-              // If no alternative matches, we trust the expected direction from balance
-              direction = expectedDir;
-              amount = expectedAmt;
-            }
+          } else if (deltaAmt <= 999999999) {
+            direction = delta > 0 ? 'credit' : 'debit';
+            amount = deltaAmt;
+            corrected = true;
           }
+          void corrected;
         }
         // Update previous balance for next row
         previousBalance = balance;
@@ -779,6 +797,23 @@ export function mergeMultilineRows(table: string[][]): string[][] {
 
   if (dateColIdx === -1) return table;
 
+  // Identify the description column (most alphabetic cells outside the date
+  // column). Numeric reference fragments on continuation lines are appended
+  // here instead of polluting amount columns.
+  let descColIdx = dateColIdx === 0 ? 2 : 1;
+  {
+    const width = table[0]?.length || 0;
+    let bestLetters = -1;
+    for (let c = 0; c < width; c++) {
+      if (c === dateColIdx) continue;
+      let letters = 0;
+      for (const row of table) {
+        if (/[A-Za-z]/.test(row[c] || '')) letters++;
+      }
+      if (letters > bestLetters) { bestLetters = letters; descColIdx = c; }
+    }
+  }
+
   const mergedTable: string[][] = [];
   for (const row of table) {
     const firstCell = (row[dateColIdx] || '').trim();
@@ -792,9 +827,13 @@ export function mergeMultilineRows(table: string[][]): string[][] {
         const cell = (row[c] || '').trim();
         if (!cell) continue;
         if (c === dateColIdx) continue; // skip date col for continuation
-        if (parseAmount(cell) !== null && isAmountCell(cell) && !prev[c]) {
-          // Amount-only continuation line: fill missing amount column
+        if (parseAmount(cell) !== null && isAmountCell(cell) && isStrictMoneyToken(cell) && !prev[c]) {
+          // Strictly money-formatted continuation cell: fill missing amount column
           prev[c] = cell;
+        } else if (parseAmount(cell) !== null && !isStrictMoneyToken(cell)) {
+          // Numeric but not money-formatted (UPI/UTR/phone fragment): it is
+          // part of the narrative — never let it near an amount column.
+          prev[descColIdx] = prev[descColIdx] ? `${prev[descColIdx]} ${cell}` : cell;
         } else {
           // Text: append to description column
           prev[c] = prev[c] ? `${prev[c]} ${cell}` : cell;
