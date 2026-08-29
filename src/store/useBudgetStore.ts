@@ -386,7 +386,7 @@ export function useBudgetStore() {
       const updated = { ...remarked0, modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'edit', section: String(section), entryName: entry.name, oldValue: String(oldVal), newValue: String(value), monthIndex, timestamp: now() };
+      const audit: AuditEntry = { id: `audit-${now()}`, action: 'edit', section: String(section), entryName: entry.name, oldValue: String(oldVal), newValue: String(value), monthIndex, timestamp: now() };
       auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
@@ -409,7 +409,7 @@ export function useBudgetStore() {
       const updated = { ...y, [section]: entries, debtMeta: newMeta, modifiedAt: now() };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      const audit: AuditEntry = { id: `audit-${Date.now()}`, action: 'rename', section: String(section), entryName: name, oldValue: oldName, newValue: name, timestamp: now() };
+      const audit: AuditEntry = { id: `audit-${now()}`, action: 'rename', section: String(section), entryName: name, oldValue: oldName, newValue: name, timestamp: now() };
       auditY.auditLog = [audit, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
@@ -1548,5 +1548,6 @@ function sumAll2Month(y: YearData, m: number, section: keyof YearData): number {
   updateCoachSettings,    
   };
 }
+
 
 
