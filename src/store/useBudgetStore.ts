@@ -578,6 +578,11 @@ export function useBudgetStore() {
     setState(prev => {
       const y = prev.years[prev.activeYear];
       if (!y) return prev;
+      // Idempotent guard: if this hash/refId was already processed, just drop it from pendingTxns and skip adding amount.
+      const isAlreadyProcessed = !!(txn.refId ? (y.processedTxnIds || []).includes(txn.refId) : (y.processedTxnHashes || []).includes(txn.hash));
+      if (isAlreadyProcessed) {
+        return { ...prev, years: { ...prev.years, [prev.activeYear]: { ...y, pendingTxns: y.pendingTxns.filter(t => t.hash !== txn.hash && t.refId !== txn.refId), modifiedAt: now() } } };
+      }
       const ts = now();
       const entries = [...(y[section] as DataEntry[])];
       let targetId = entryId;
@@ -598,7 +603,8 @@ export function useBudgetStore() {
       values[txn.monthIndex] = (values[txn.monthIndex] || 0) + txn.amount;
       entries[idx] = { ...entries[idx], values, modifiedAt: ts };
       const base0 = { ...y, [section]: entries, pendingTxns: y.pendingTxns.filter(t => t.hash !== txn.hash && t.refId !== txn.refId) } as YearData;
-      const base1 = { ...base0, processedTxnHashes: txn.refId ? base0.processedTxnHashes : [txn.hash, ...base0.processedTxnHashes].slice(0, 2000) } as YearData;
+      // Always record both hash and refId in processed arrays for robust dedupe (e.g. if re-parse extracts different refId).
+      const base1 = { ...base0, processedTxnHashes: [txn.hash, ...base0.processedTxnHashes].slice(0, 2000) } as YearData;
       const base2 = txn.refId ? { ...base1, processedTxnIds: [txn.refId, ...base1.processedTxnIds].slice(0, 2000) } : base1;
       const base = withImportedMonth(base2, [monthKeyOf(txn)]);
       const updated = { ...base, remarks: deriveRemarksForMonth(base, txn.monthIndex), modifiedAt: ts };
@@ -634,8 +640,8 @@ export function useBudgetStore() {
       if (!txn) return prev;
       const updated = { ...y,
         pendingTxns: y.pendingTxns.filter(t => t.id !== txnId),
-        processedTxnHashes: txn.refId ? y.processedTxnHashes : [txn.hash, ...y.processedTxnHashes].slice(0, 2000),
-        processedTxnIds: txn.refId ? [txn.refId, ...y.processedTxnIds].slice(0, 2000) : y.processedTxnIds,
+        processedTxnHashes: [txn.hash, ...y.processedTxnHashes].slice(0, 2000),
+        processedTxnIds: [txn.refId, ...y.processedTxnIds].slice(0, 2000),
         modifiedAt: now() };
       return { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
     });
