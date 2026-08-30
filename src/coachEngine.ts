@@ -1,6 +1,6 @@
 
 // src/coachEngine.ts
-import { YearData } from './store/useBudgetStore';
+import type { YearData } from './store/useBudgetStore';
 import { forecastNextMonth } from './utils/forecast';
 
 export interface CoachInsight {
@@ -71,10 +71,6 @@ function getIncomeTotal(yearData: YearData, monthIndex: number): number {
   return getTotalForYear(yearData, 'incomeEntries', monthIndex);
 }
 
-function getDebtTotal(yearData: YearData, monthIndex: number): number {
-  return getTotalForYear(yearData, 'debtRepayment', monthIndex);
-}
-
 function getSavingsTotal(yearData: YearData, monthIndex: number): number {
   return getTotalForYear(yearData, 'savingsData', monthIndex);
 }
@@ -126,7 +122,6 @@ export function generateInsights(
   const currentMonth = yearData.months[monthIndex] || '';
   const income = getIncomeTotal(yearData, monthIndex);
   const household = getHouseholdTotal(yearData, monthIndex);
-  const debt = getDebtTotal(yearData, monthIndex);
   const savings = getSavingsTotal(yearData, monthIndex);
   const allocation = yearData.allocationEntries;
   const cap = allocation.find(e => e.id === 'house70')?.values[monthIndex] || 0;
@@ -341,7 +336,7 @@ export function generateInsights(
 }
 
 // Annual analysis: savings rate, spending spread, concentration, debt, tax shield.
-export function generateAnnualInsights(yearData: YearData, settings: CoachSettings): CoachInsight[] {
+export function generateAnnualInsights(yearData: YearData, _settings: CoachSettings): CoachInsight[] {
   const insights: CoachInsight[] = [];
   const year = yearData.year;
   const sum = (arr: { values: number[] }[]) => arr.reduce((s2, e) => s2 + e.values.reduce((a, b) => a + b, 0), 0);
