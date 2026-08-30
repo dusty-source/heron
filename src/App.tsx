@@ -723,7 +723,19 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
       const monthKey = t.dateISO.slice(0, 7);
       const monthImported = importedMonths.has(monthKey);
       const isDupe = t.refId ? processedI.has(t.refId) : processedH.has(t.hash);
-      return { txn: t, selected: true, dupe: isDupe || inBatch, yearMismatch: t.yearHint !== activeYearNum, monthImported, section, entryId, newName: entryId ? '' : suggestedRowName(t.description) };
+      // Assign unique id for UI row operations (checkbox, dropdowns, name edits).
+      // Prefer existing non-empty id; otherwise use hash-based index.
+      const txn = { ...t, id: t.id || `${t.hash}-${i}` };
+      return { 
+        selected: true, 
+        dupe: isDupe || inBatch, 
+        yearMismatch: t.yearHint !== activeYearNum, 
+        monthImported, 
+        section, 
+        entryId, 
+        newName: entryId ? '' : suggestedRowName(t.description),
+        txn 
+      };
     });
   };
 
