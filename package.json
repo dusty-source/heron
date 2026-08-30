@@ -5,11 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc -b && vite build",
     "preview": "vite preview",
     "sync": "cap sync ios",
     "open": "cap open ios",
-    "ios": "npm run build && cap sync ios && cap open ios"
+    "ios": "npm run build && cap sync ios && cap open ios",
+    "pdf:extract": "node --experimental-strip-types scripts/pdf-to-csv.ts",
+    "pdf:test": "node --experimental-strip-types scripts/test-extractor.ts",
+    "pdf:verify": "node --experimental-strip-types scripts/verify-statement-parser.ts"
   },
   "dependencies": {
     "@capacitor/cli": "^6.0.0",
