@@ -766,7 +766,7 @@ export async function extractTextFromPdf(
         for (const cell of row) {
           const center = (cell.x + cell.right) / 2;
           // Filter to only consider "column-like" content (not very wide description cells)
-          if (cell.width < medianHeight * 8) {
+          if ((cell.right - cell.x) < medianHeight * 8) {
             allCenters.push(center);
           }
         }
