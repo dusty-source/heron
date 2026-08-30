@@ -34,6 +34,11 @@ export interface ColumnDetection {
   usedHeaders: boolean;
   hasBalance: boolean;
   layoutKey: string;
+  diagnostics?: {  // Phase 4: diagnostic info for debugging parse failures
+    fallbackUsed?: 'balanceDelta' | 'heuristic';  // which fallback path was taken
+    score?: number;                               // the detection score (can be < 0.7)
+    reasons?: string[];                           // why we fell back to heuristics
+  };
 }
 
 
@@ -345,6 +350,26 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
     profile.debitIdx = best.d;
     profile.balanceIdx = best.b;
     return { profile, usedHeaders: false, hasBalance: best.b !== -1, layoutKey: fnv(`s${dateIdx}-${descIdx}-${best.c}-${best.d}-${best.b}`) };
+
+  // Phase 3: If score < 0.7 but we found a balance column, try balance-delta fallback
+  } else if (best.score < 0.7 && best.b >= 0) {
+    console.warn(`[detectColumns] Score ${best.score} < 0.7 but balance column found at idx ${best.b}. Trying balance-delta fallback.`);
+    
+    return { 
+      profile, 
+      usedHeaders: false, 
+      hasBalance: true, 
+      layoutKey: fnv(`s${dateIdx}-${descIdx}-${best.c}-${best.d}-${best.b}`),
+      diagnostics: { fallbackUsed: 'balanceDelta' as const, score: best.score }
+    };
+
+  // Phase 4: Diagnostic logging for score < 0.7 with no balance column (fallback to heuristics)
+} else {
+    const lowScoreReasons: string[] = [];
+    if (best.score < 0.6) lowScoreReasons.push(`score=${best.score} (very low)`);
+    if (best.b === -1) lowScoreReasons.push('no balance indicator');
+    console.warn(`[detectColumns] Falling back to heuristics because: ${lowScoreReasons.join(', ')}`);
+
   }
   // No reliable balance: try to identify credit/debit columns from headers, then markers, then heuristics
   let crCol = -1, drCol = -1;
@@ -405,7 +430,13 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
     }
   }
 
-  return { profile, usedHeaders: false, hasBalance: false, layoutKey: fnv(`m${dateIdx}-${descIdx}-${profile.creditIdx}-${profile.debitIdx}`) };
+  return { 
+    profile, 
+    usedHeaders: false, 
+    hasBalance: false, 
+    layoutKey: fnv(`m${dateIdx}-${descIdx}-${profile.creditIdx}-${profile.debitIdx}`),
+    diagnostics: lowScoreReasons.length > 0 ? { fallbackUsed: 'heuristic', score: best.score, reasons: lowScoreReasons } : undefined
+  };
 }
 
 // ── rows -> transactions ────────────────────────────────────────
@@ -499,6 +530,12 @@ export function rowsToTxns(rows: string[][],p: ColumnProfile,order: DateOrder,ha
         // First row: just store the balance
         previousBalance = balance;
       }
+    }
+    if (!direction) continue;
+    // Phase 2: Plausibility gate (reject amounts > 9 digits to avoid UTR pollution)
+    if (amount > 999999999) {
+      console.warn(`[rowsToTxns] Amount ${amount} exceeds plausibility threshold`);
+      continue;
     }
     if (!direction || amount <= 0) continue;
     const dateISO = toISO(d);
