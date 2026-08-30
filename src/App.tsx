@@ -17,7 +17,7 @@ import type { TaxEntry, WindfallResult, InterceptorStatus, NoSpendStatus, Shared
 import { formatCurrency, getStatusColor, getRemarkColor, getBurnRingColor, getBurnStatusColor, getTaxCategoryColor } from './data/budgetData';
 import type { BurnRate } from './data/budgetData';
 import { CoachInsight, generateAnnualInsights, defaultCoachSettings } from './coachEngine';
-import { parseCsvStatement, parseStatementLines, extractTextFromPdf, type ParsedTxn, type DateOrder } from './utils/statementParser';
+import { parseCsvStatement, parseStatementLines, extractTextFromPdf, type ParsedTxn, type DateOrder, type ParseResult } from './utils/statementParser';
 
 type Tab = 'overview' | 'details' | 'debt' | 'tax' | 'war' | 'sync' | 'coach';
 type EditSection = 'income' | 'household' | 'debt-repay' | 'savings' | 'debt-prog' | 'tax' | null;
@@ -700,6 +700,7 @@ function StatementImportSection({ store, selectedMonth }: {
   const [password, setPassword] = useState('');
   const [dateOrder, setDateOrder] = useState<DateOrder>('dmy');
   const [rows, setRows] = useState<ImportRow[] | null>(null);
+  const [parseResultState, setParseResultState] = useState<ParseResult | null>(null);
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState<'all' | 'credit' | 'debit'>('all');
   const [showPassword, setShowPassword] = useState(false);
@@ -753,14 +754,28 @@ function StatementImportSection({ store, selectedMonth }: {
     try {
       const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
       let txns: ParsedTxn[] = [];
+      let parseRes: ParseResult | null = null;
       if (isPdf) {
         const buf = await file.arrayBuffer();
         const lines = await extractTextFromPdf(buf, password || undefined);
-        txns = parseStatementLines(lines, dateOrder).txns;
+        const result = parseStatementLines(lines, dateOrder);
+        txns = result.txns;
+        parseRes = result;
+        setParseResultState(result);
       } else {
         const text = await file.text();
-        txns = parseCsvStatement(text, dateOrder).txns;
+        const result = parseCsvStatement(text, dateOrder);
+        txns = result.txns;
+        parseRes = result;
+        setParseResultState(result);
       }
+      
+      // Phase 4: Log ParseResult diagnostics before user confirmation
+      if (parseRes?.detection?.diagnostics) {
+        const diag = parseRes.detection.diagnostics;
+        console.warn(`[App] Parsing used ${diag.fallbackUsed || 'heuristic'} fallback, score: ${diag.score ?? '?'}`);
+      }
+      
       if (txns.length === 0) {
         setError('No transactions detected in this file. For password-protected PDFs enter the password above; you can also try switching the date order.');
         setBusy(false);
@@ -848,6 +863,40 @@ function StatementImportSection({ store, selectedMonth }: {
       </div>
       {error && <div className="mt-2 text-[10px] text-ios-red font-medium">{error}</div>}
       {notice && <div className="mt-2 text-[10px] text-ios-green font-medium">{notice}</div>}
+      
+      {/* Phase 4: ParseResult diagnostics */}
+      {parseResultState?.detection?.diagnostics && (
+        <div className="mt-2 p-2 rounded-xl bg-ios-surface-2 border border-ios-border/30">
+          {(() => {
+            const diag = parseResultState.detection.diagnostics;
+            const score = diag.score ?? 0;
+            
+            // Render status indicator based on detection quality
+            if (score > 0.7) {
+              return (
+                <div className="flex items-center gap-1.5 mb-1 text-ios-green">
+                  <CheckCircle2 size={14} />
+                  <span>Detection confidence: {Math.round(score * 100)}%</span>
+                </div>
+              );
+            } else if (diag.fallbackUsed === 'balanceDelta') {
+              return (
+                <div className="flex items-center gap-1.5 mb-1 text-ios-orange">
+                  <AlertTriangle size={14} />
+                  <span>Used balance-delta fallback ({diag.reasons?.join(', ') || 'no columns found'})</span>
+                </div>
+              );
+            } else {
+              return (
+                <div className="flex items-center gap-1.5 mb-1 text-ios-orange">
+                  <AlertTriangle size={14} />
+                  <span>Heuristic fallback used ({diag.reasons?.join(', ') || 'no clear match'})</span>
+                </div>
+              );
+            }
+          })()}
+        </div>
+      )}
 
       <BottomSheet isOpen={!!rows} onClose={() => setRows(null)} title="Review imported transactions">
         {rows && (
