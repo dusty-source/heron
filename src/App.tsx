@@ -673,6 +673,7 @@ function SharedDashboard({ expenses }: { expenses: SharedExpense[] }) {
 /* ── Statement Import ──────────────────────────── */
 type ImportRow = {
   txn: ParsedTxn;
+  uid: string; // stable per-row identity for checkbox toggles (avoids parser id ambiguity)
   selected: boolean;
   dupe: boolean;
   yearMismatch: boolean;
@@ -731,6 +732,7 @@ function StatementImportSection({ store, selectedMonth }: {
       // Prefer existing non-empty id; otherwise use hash-based index.
       const txn = { ...t, id: t.id || `${t.hash}-${i}` };
       return { 
+        uid: `row-${i}`, 
         selected: true, 
         dupe: isDupe || inBatch, 
         yearMismatch: t.yearHint !== activeYearNum, 
@@ -796,7 +798,7 @@ function StatementImportSection({ store, selectedMonth }: {
       confirmImportedTxn(r.txn, r.section, r.entryId || null, r.entryId ? null : r.newName.trim());
       if (r.txn.direction === 'credit') autoAllocate(r.txn.monthIndex);
     }
-    const deferred = rows.filter(r => !r.selected && !r.dupe).map(r => r.txn);
+    const deferred = rows.filter(r => !r.selected && !r.dupe && !r.yearMismatch).map(r => r.txn);
     if (deferred.length) queueTransactions(deferred);
     generateCoachInsights(selectedMonth);
     const skipped = rows.filter(r => r.selected && !r.dupe && !r.yearMismatch && !r.entryId && !r.newName.trim()).length;
@@ -873,13 +875,13 @@ function StatementImportSection({ store, selectedMonth }: {
             <div className="space-y-2 flex-1 min-h-0 overflow-y-auto overscroll-contain scroll-touch">
               {rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).length > 0 ? (
                 rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((r, i) => (
-                <div key={r.txn.id || r.txn.hash} className={`p-2.5 rounded-xl border ${r.dupe || r.yearMismatch ? 'opacity-50 border-ios-border/10' : 'border-ios-border/20'} bg-ios-surface-2`}>
+                <div key={r.uid} className={`p-2.5 rounded-xl border ${r.dupe || r.yearMismatch ? 'opacity-50 border-ios-border/10' : 'border-ios-border/20'} bg-ios-surface-2`}>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, selected: !x.selected } : x)))}
+                    <button onClick={() => setRows(rows.map(x => (x.uid === r.uid ? { ...x, selected: !x.selected } : x)))}
                       className={`w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold ${r.selected ? 'bg-ios-blue text-white' : 'bg-ios-surface text-ios-text-secondary border border-ios-border/30'}`}>
                       {r.selected ? '✓' : ''}
                     </button>
-                    <button onClick={() => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, txn: { ...x.txn, direction: x.txn.direction === 'credit' ? 'debit' : 'credit' } } : x)))}
+                    <button onClick={() => setRows(rows.map(x => (x.uid === r.uid ? { ...x, txn: { ...x.txn, direction: x.txn.direction === 'credit' ? 'debit' : 'credit' } } : x)))}
                       className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold ${r.txn.direction === 'credit' ? 'bg-ios-green/15 text-ios-green' : 'bg-ios-red/15 text-ios-red'}`}>
                       {r.txn.direction === 'credit' ? 'CR' : 'DR'}
                     </button>
@@ -889,14 +891,14 @@ function StatementImportSection({ store, selectedMonth }: {
                   <div className="text-[10px] text-ios-text-secondary truncate mt-1">{r.txn.description}</div>
                   {!r.dupe && !r.yearMismatch && (
                     <div className="flex items-center gap-1.5 mt-1.5">
-                      <select value={r.section} onChange={e => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, section: e.target.value as ImportRow['section'], entryId: '', newName: suggestedRowName(x.txn.description) } : x)))}
+                      <select value={r.section} onChange={e => setRows(rows.map(x => (x.uid === r.uid ? { ...x, section: e.target.value as ImportRow['section'], entryId: '', newName: suggestedRowName(x.txn.description) } : x)))}
                         className='w-full bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none mb-1'>
                         <option value="incomeEntries">→ Incoming (income)</option>
                         <option value="householdExpenses">→ Expense (household)</option>
                         <option value="savingsData">→ Savings</option>
                         <option value="debtRepayment">→ Debt Repayment (EMI)</option>
                       </select>
-                      <select value={r.entryId} onChange={e => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, entryId: e.target.value, newName: e.target.value ? '' : x.newName } : x)))}
+                      <select value={r.entryId} onChange={e => setRows(rows.map(x => (x.uid === r.uid ? { ...x, entryId: e.target.value, newName: e.target.value ? '' : x.newName } : x)))}
                         className='flex-1 bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none'>
                         <option value="">＋ New row…</option>
                         {(r.section === 'incomeEntries' ? currentYear.incomeEntries : r.section === 'savingsData' ? currentYear.savingsData : r.section === 'debtRepayment' ? currentYear.debtRepayment : currentYear.householdExpenses).map(en => (
@@ -904,7 +906,7 @@ function StatementImportSection({ store, selectedMonth }: {
                         ))}
                       </select>
                       {!r.entryId && (
-                        <input value={r.newName} onChange={e => setRows(rows.map(x => (x.txn.id === r.txn.id ? { ...x, newName: e.target.value } : x)))}
+                        <input value={r.newName} onChange={e => setRows(rows.map(x => (x.uid === r.uid ? { ...x, newName: e.target.value } : x)))}
                           placeholder="New row name" className="flex-1 bg-ios-surface rounded-xl px-2 py-1.5 text-[10px] text-ios-text border border-ios-border/30 outline-none" />
                       )}
                     </div>
