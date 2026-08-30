@@ -327,9 +327,12 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
   profile.descIdx = descIdx;
   // try (credit, debit, balance) combos scored by balance-delta arithmetic
   let best = { score: -1, c: -1, d: -1, b: -1 };
+  // Diagnostic reasons accumulated while falling back to heuristics (score < 0.7, no balance column)
+  const lowScoreReasons: string[] = [];
   if (numericCols.length >= 2 && numericCols.length <= 6) {
     for (const c of numericCols) for (const d of numericCols) {
       if (c === d) continue;
+
       for (const b of [...numericCols, -1]) {
         if (b === c || b === d) continue;
         let match = 0, total = 0;
@@ -354,26 +357,27 @@ export function detectColumns(allRows: string[][]): ColumnDetection | null {
   // Phase 3: If score < 0.7 but we found a balance column, try balance-delta fallback
   } else if (best.score < 0.7 && best.b >= 0) {
     console.warn(`[detectColumns] Score ${best.score} < 0.7 but balance column found at idx ${best.b}. Trying balance-delta fallback.`);
-    
-    return { 
-      profile, 
-      usedHeaders: false, 
-      hasBalance: true, 
+
+    profile.creditIdx = best.c;
+    profile.debitIdx = best.d;
+    profile.balanceIdx = best.b;
+    return {
+      profile,
+      usedHeaders: false,
+      hasBalance: true,
       layoutKey: fnv(`s${dateIdx}-${descIdx}-${best.c}-${best.d}-${best.b}`),
       diagnostics: { fallbackUsed: 'balanceDelta' as const, score: best.score }
     };
 
-  // Phase 4: Diagnostic logging for score < 0.7 with no balance column (fallback to heuristics)
-} else {
-    const lowScoreReasons: string[] = [];
+  // Phase 4: score < 0.7 and no balance column - log why and fall back to heuristics
+  } else {
     if (best.score < 0.6) lowScoreReasons.push(`score=${best.score} (very low)`);
-    if (best.b === -1) lowScoreReasons.push('no balance indicator');
+    lowScoreReasons.push('no balance indicator');
     console.warn(`[detectColumns] Falling back to heuristics because: ${lowScoreReasons.join(', ')}`);
-
   }
   // No reliable balance: try to identify credit/debit columns from headers, then markers, then heuristics
   let crCol = -1, drCol = -1;
-  
+
   // 1) Try to find credit/debit columns using header keywords (if not already done)
   //    Scan the first few rows (same as header detection but without requiring date)
   const headerLimit = Math.min(allRows.length, 15);
@@ -490,13 +494,11 @@ export function rowsToTxns(rows: string[][],p: ColumnProfile,order: DateOrder,ha
         // positive delta = credit (balance went up), negative = debit.
         const delta = balance - previousBalance;
         const deltaAmt = Math.abs(delta);
-        let corrected = false;
         if (deltaAmt > 0.01) {
           if (Math.abs(deltaAmt - amount) < 0.01) {
             // Parsed amount matches the balance chain — just enforce direction.
             const expectedDir: Direction = delta > 0 ? 'credit' : 'debit';
             if (direction !== expectedDir) direction = expectedDir;
-            corrected = true;
           } else if (p.creditIdx >= 0 && p.debitIdx >= 0 && p.creditIdx !== p.debitIdx) {
             // Parsed amount does NOT match the chain: try the raw column values
             // (guards against reference-number pollution inflating the amount).
@@ -505,24 +507,19 @@ export function rowsToTxns(rows: string[][],p: ColumnProfile,order: DateOrder,ha
             if (altCr != null && altCr > 0 && Math.abs(altCr - deltaAmt) < 0.01) {
               direction = 'credit';
               amount = altCr;
-              corrected = true;
             } else if (altDr != null && altDr > 0 && Math.abs(altDr - deltaAmt) < 0.01) {
               direction = 'debit';
               amount = altDr;
-              corrected = true;
             } else if (deltaAmt <= 999999999) {
               // Last resort: trust the balance chain outright. The review UI
               // still lets the user inspect/flip every row before inserting.
               direction = delta > 0 ? 'credit' : 'debit';
               amount = deltaAmt;
-              corrected = true;
             }
           } else if (deltaAmt <= 999999999) {
             direction = delta > 0 ? 'credit' : 'debit';
             amount = deltaAmt;
-            corrected = true;
           }
-          void corrected;
         }
         // Update previous balance for next row
         previousBalance = balance;
