@@ -17,7 +17,8 @@ import type { TaxEntry, WindfallResult, InterceptorStatus, NoSpendStatus, Shared
 import { formatCurrency, getStatusColor, getRemarkColor, getBurnRingColor, getBurnStatusColor, getTaxCategoryColor } from './data/budgetData';
 import type { BurnRate } from './data/budgetData';
 import { generateAnnualInsights, defaultCoachSettings } from './coachEngine';
-import { parseCsvStatement, parseStatementLines, extractTextFromPdf, type ParsedTxn, type DateOrder, type ParseResult, gridToCsv, diagnosticsToCsv } from './utils/statementParser';
+import { parseCsvStatement, type ParsedTxn, type DateOrder, type ParseResult, gridToCsv, diagnosticsToCsv } from './utils/statementParser';
+import { parsePdfStatementAccurate } from './utils/pdfStatementAdapter';
 
 type Tab = 'overview' | 'details' | 'debt' | 'tax' | 'war' | 'sync' | 'coach';
 type EditSection = 'income' | 'household' | 'debt-repay' | 'savings' | 'debt-prog' | 'tax' | null;
@@ -754,8 +755,7 @@ function StatementImportSection({ store, selectedMonth }: {
       let parseRes: ParseResult | null = null;
       if (isPdf) {
         const buf = await file.arrayBuffer();
-        const lines = await extractTextFromPdf(buf, password || undefined);
-        const result = parseStatementLines(lines, dateOrder);
+        const result = await parsePdfStatementAccurate(buf, password || undefined, dateOrder);
         txns = result.txns;
         parseRes = result;
         setParseResultState(result);
