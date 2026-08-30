@@ -182,6 +182,15 @@ export async function extractStatement(
   _dateOrder: DateOrder = 'dmy',
 ): Promise<ExtractionResult> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // Browser-only worker setup — mirrors extractTextFromPdf (statementParser.ts:696).
+  // Node/CLI: typeof window === undefined → branch skipped → the `?worker` import
+  // never resolves and cannot crash the type-stripping runtime.
+  if (typeof window !== 'undefined'
+      && !pdfjs.GlobalWorkerOptions.workerSrc
+      && !pdfjs.GlobalWorkerOptions.workerPort) {
+    const { default: PdfWorker } = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker');
+    pdfjs.GlobalWorkerOptions.workerPort = new PdfWorker();
+  }
   const doc = await pdfjs.getDocument({
     data: new Uint8Array(data),
     password: password || undefined,
