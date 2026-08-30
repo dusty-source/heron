@@ -260,7 +260,7 @@ function isAmountCell(v: string): boolean {
  * - short pure digits (≤7): 5000
  * Rejects bare long digit runs (UPI/UTR/phone fragments like 988280622939).
  */
-function isStrictMoneyToken(v: string): boolean {
+export function isStrictMoneyToken(v: string): boolean {
   const t = v.trim();
   if (!t || !/\d/.test(t)) return false;
   // UPI/UTR/phone fragments are 10–12 digit runs; real amounts are shorter.
@@ -980,7 +980,8 @@ export function csvEscape(value: string): string {
  */
 export function gridToCsv(grid: string[][]): string {
   const bom = '\uFEFF'; // UTF-8 BOM for Excel/Office compatibility
-  const lines = [csvEscape('Columns')].concat(grid.map(row => row.join(',')));
+  const escapeRow = (row: string[]) => row.map(csvEscape).join(',');
+  const lines = [escapeRow(['Columns'])].concat(grid.map(escapeRow));
   return bom + lines.join('\r\n');
 }
 
