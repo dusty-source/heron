@@ -11,7 +11,10 @@ import { txnHash } from './statementParser.ts';
 import { extractStatement } from './iciciStatementExtractor.ts';
 import { checkBalances } from './csvWriter.ts';
 
-// Password-error mapping that the app's handleFile expects (App.tsx:799-801).
+/**
+ * Accurate PDF statement parser, matching the app's ParseResult contract.
+ * Replaces extractTextFromPdf + parseStatementLines for the ICICI layout.
+ */
 function mapPasswordError(err: unknown): never {
   const e = err as { name?: string; code?: number };
   if (e?.name === 'PasswordException') {
