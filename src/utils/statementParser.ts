@@ -110,6 +110,24 @@ export function parseAmount(raw: string): number | null {
   return neg ? -n : n;
 }
 
+/**
+ * Helper: cluster 1D positions with a given tolerance.
+ * Returns the average (center) of each cluster.
+ */
+function clusterPositions(positions: number[], tolerance: number): number[] {
+  if (positions.length === 0) return [];
+  const sorted = positions.slice().sort((a, b) => a - b);
+  const clusters: number[][] = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] - sorted[i - 1] <= tolerance) {
+      clusters[clusters.length - 1].push(sorted[i]);
+    } else {
+      clusters.push([sorted[i]]);
+    }
+  }
+  return clusters.map(c => c.reduce((a, b) => a + b, 0) / c.length);
+}
+
 function fixYear(y: number): number {
   if (y >= 1000) return y;
   return y < 70 ? 2000 + y : 1900 + y;
@@ -726,7 +744,10 @@ export async function extractTextFromPdf(
     });
 
     // Establish column layout from the header row (contains "Date")
+    let pageColumns: number[] | null = null; // column centers when using clustering fallback
+    
     if (!refCells) {
+      // Try to find a header row first
       for (const cells of rawRows) {
         if (cells.some(c => /date|posted|value\s*dt|txn/i.test(c.str))) {
           refCells = cells;
@@ -736,29 +757,94 @@ export async function extractTextFromPdf(
     }
 
     const numCols = refCells ? refCells.length : Math.max(...rawRows.map(r => r.length), 1);
-    const centers = refCells ? refCells.map(c => (c.x + c.right) / 2) : [];
+    
+    // Use clustering when no header is found and there are enough columns
+    if (!refCells && numCols > 1) {
+      // Extract x-centers of all rawRows for this page
+      const allCenters: number[] = [];
+      for (const row of rawRows) {
+        for (const cell of row) {
+          const center = (cell.x + cell.right) / 2;
+          // Filter to only consider "column-like" content (not very wide description cells)
+          if (cell.width < medianHeight * 8) {
+            allCenters.push(center);
+          }
+        }
+      }
+
+      // Dynamic tolerance based on median height
+      const colTolerance = Math.max(medianHeight * 0.5, 6);
+
+      // Cluster column centers
+      const clusteredCenters = clusterPositions(allCenters, colTolerance);
+      
+      // Merge adjacent clusters if within ~1.5x median height (prevents description shattering)
+      const mergedCenters: number[] = [];
+      for (let i = 0; i < clusteredCenters.length; i++) {
+        if (mergedCenters.length === 0) {
+          mergedCenters.push(clusteredCenters[i]);
+        } else if (clusteredCenters[i] - mergedCenters[mergedCenters.length - 1] > medianHeight * 1.5) {
+          // Gap too large: start a new cluster
+          mergedCenters.push(clusteredCenters[i]);
+        } else {
+          // Merge into the previous cluster (take average position)
+          const avg = (mergedCenters[mergedCenters.length - 1] + clusteredCenters[i]) / 2;
+          mergedCenters[mergedCenters.length - 1] = avg;
+        }
+      }
+
+      // Ensure we have at least as many columns as needed, or fall back to sequential
+      if (mergedCenters.length >= numCols || mergedCenters.length === 1) {
+        pageColumns = mergedCenters;
+      } else {
+        // Not enough clusters: fall back to simple sequential assignment
+        pageColumns = [];
+      }
+    }
+
+    const centers = refCells ? refCells.map(c => (c.x + c.right) / 2) : (pageColumns || []);
 
     // Assign a cell to the header column it overlaps most (or nearest centre)
     const assignCol = (cell: Cell): number => {
-      if (!refCells) return -1;
-      let best = 0;
+      if (!refCells && !pageColumns) return Math.min(0, numCols - 1);
+      
+      let best: number = 0;
       let bestOverlap = -1;
-      for (let i = 0; i < refCells.length; i++) {
-        const rc = refCells[i];
-        const overlap = Math.min(cell.right, rc.right) - Math.max(cell.x, rc.x);
-        if (overlap > bestOverlap) {
-          bestOverlap = overlap;
-          best = i;
+
+      // First try to find header overlap (if refCells exists)
+      if (refCells) {
+        for (let i = 0; i < refCells.length; i++) {
+          const rc = refCells[i];
+          const overlap = Math.min(cell.right, rc.right) - Math.max(cell.x, rc.x);
+          if (overlap > bestOverlap) {
+            bestOverlap = overlap;
+            best = i;
+          }
         }
       }
-      if (bestOverlap <= 0) {
-        const cCenter = (cell.x + cell.right) / 2;
+
+      // If no header overlap found (headerless), use nearest column center
+      const cCenter = (cell.x + cell.right) / 2;
+      if (!refCells && pageColumns && pageColumns.length > 0) {
+        let bestDist = Infinity;
+        for (let i = 0; i < pageColumns.length; i++) {
+          const d = Math.abs(cCenter - pageColumns[i]);
+          if (d < bestDist) { bestDist = d; best = i; }
+        }
+      } else if (!refCells && !pageColumns) {
+        // Fallback: sequential assignment based on cell index
+        best = Math.min(0, numCols - 1);
+      }
+
+      // If overlap <= 0 and we have header reference, still use nearest center
+      if (bestOverlap <= 0 && refCells) {
         let bestDist = Infinity;
         for (let i = 0; i < centers.length; i++) {
           const d = Math.abs(cCenter - centers[i]);
           if (d < bestDist) { bestDist = d; best = i; }
         }
       }
+
       return best;
     };
 
