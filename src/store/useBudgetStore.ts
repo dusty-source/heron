@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect, useCallback } from 'react';
 
-import { generateInsights, generateAnnualInsights, CoachInsight, CoachSettings, defaultCoachSettings } from '../coachEngine';
+import { generateInsights, generateAnnualInsights, defaultCoachSettings } from '../coachEngine';
+import type { CoachInsight, CoachSettings } from '../coachEngine';
 import { svgGroupedBars, svgLineChart } from '../utils/reportCharts';
 
 export interface DataEntry {
@@ -302,7 +303,6 @@ function migrateV2ToV3(state: any): BudgetState {
 
 function migrateV3ToV4(state: any): BudgetState {
   if (!state || !state.years) return createFreshState(true);
-  const ts = now();
   for (const year of Object.keys(state.years)) {
     const y = state.years[year];
     if (!y) continue;
@@ -935,7 +935,7 @@ export function useBudgetStore() {
       const updated = { ...y, taxShieldEntries: entries, modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      auditY.auditLog = [{ id: `audit-${now()}`, action: 'add', section: 'taxShield', entryName: name, timestamp: ts }, ...auditY.auditLog].slice(0, 100);
+      auditY.auditLog = [{ id: `audit-${now()}`, action: 'add', section: 'taxShield', entryName: name, timestamp: ts } as AuditEntry, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
   }, []);
@@ -1031,7 +1031,7 @@ export function useBudgetStore() {
       const updated = { ...base5, remarks: deriveRemarksForYear(base5), modifiedAt: ts };
       const newState = { ...prev, years: { ...prev.years, [prev.activeYear]: updated } };
       const auditY = newState.years[newState.activeYear];
-      auditY.auditLog = [{ id: `audit-${now()}`, action: 'add', section: 'windfall', entryName: `Windfall Allocation`, newValue: `S:${toSavings} H:${toHousehold} D:${toDebt}`, timestamp: ts }, ...auditY.auditLog].slice(0, 100);
+      auditY.auditLog = [{ id: `audit-${now()}`, action: 'add', section: 'windfall', entryName: `Windfall Allocation`, newValue: `S:${toSavings} H:${toHousehold} D:${toDebt}`, timestamp: ts } as AuditEntry, ...auditY.auditLog].slice(0, 100);
       return newState;
     });
   }, []);
@@ -1177,7 +1177,6 @@ const getNoSpendStatus = useCallback((): NoSpendStatus => {
   const y = currentYear;
   if (!y) return { streak: 0, partnerStreak: 0, combined: 0, todaySpent: false };
   const fs = y.familySync;
-  const today = new Date().toISOString().split('T')[0];
   const nowDate = new Date();
   // "Spent today" is only meaningful for the current calendar year/month.
   // (Per-day expense tracking is not in the data model yet, so recording ANY
@@ -1410,9 +1409,6 @@ ${annualIns.map(i => `<div class="insight"><b>${i.title}</b><br/>${i.description
   return html;
 }, [currentYear]);
 
-function sumAll2Month(y: YearData, m: number, section: keyof YearData): number {
-  return (y[section] as DataEntry[]).reduce((sm, e) => sm + (e.values[m] || 0), 0);
-}
   const getIncomeTotal = useCallback((monthIndex: number) => getTotal('incomeEntries', monthIndex), [getTotal]);
   
   const getOutgoingTotal = useCallback((monthIndex: number) => {
