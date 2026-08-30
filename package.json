@@ -12,6 +12,7 @@
     "ios": "npm run build && cap sync ios && cap open ios",
     "pdf:extract": "node --experimental-strip-types scripts/pdf-to-csv.ts",
     "pdf:test": "node --experimental-strip-types scripts/test-extractor.ts",
+    "pdf:adapter": "node --experimental-strip-types scripts/test-adapter.ts",
     "pdf:verify": "node --experimental-strip-types scripts/verify-statement-parser.ts"
   },
   "dependencies": {
