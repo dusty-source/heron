@@ -10,7 +10,17 @@ import { extractStatement } from '../src/utils/iciciStatementExtractor.ts';
 import { rowsToCsv, checkBalances, checkReportToCsv } from '../src/utils/csvWriter.ts';
 import { parseCSV } from '../src/utils/statementParser.ts';
 
-const PDF_PATH = resolve('C:/Users/khanp/Downloads/Statement1_2026MTH07_472527907.pdf');
+// Locate the sample ICICI statement across likely locations (parentheses/quotes
+// in paths trip up naive resolution, so enumerate candidates).
+const CANDIDATE_PDFS = [
+  'C:/Users/khanp/Downloads/Statement1_2026MTH07_472527907.pdf',
+  'C:/Users/khanp/Downloads/Statement_2026MTH07_472527907.pdf',
+  'C:/Users/khanp/OneDrive/Downloads/Statement1_2026MTH07_472527907.pdf',
+  'C:/Users/khanp/OneDrive/Downloads/Statement_2026MTH07_472527907.pdf',
+  'C:/Users/khanp/Desktop/Statement1_2026MTH07_472527907.pdf',
+  'C:/Users/khanp/Desktop/Statement_2026MTH07_472527907.pdf',
+];
+const PDF_PATH = CANDIDATE_PDFS.find((p) => existsSync(resolve(p))) ?? CANDIDATE_PDFS[0];
 
 let passed = 0;
 let failed = 0;
@@ -29,6 +39,13 @@ function approx(a: number, b: number, tol = 0.01): boolean {
   return Math.abs(a - b) <= tol;
 }
 
+export function getTestPassword(argv: string[]): string {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--password' && argv[i + 1]) return argv[i + 1];
+  }
+  return process.env.PDF_PASSWORD || '';
+}
+
 async function main(): Promise<void> {
   if (!existsSync(PDF_PATH)) {
     console.error(`SKIP: test PDF not found at ${PDF_PATH}`);
@@ -38,7 +55,19 @@ async function main(): Promise<void> {
 
   console.log('=== Extracting PDF ===');
   const buf = readFileSync(PDF_PATH);
-  const result = await extractStatement(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const password = getTestPassword(process.argv.slice(2));
+  let result;
+  try {
+    result = await extractStatement(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), password || undefined);
+  } catch (err: unknown) {
+    const e = err as { name?: string; code?: number; message?: string };
+    if (e?.name === 'PasswordException') {
+      console.error(`SKIP: PDF is password-protected — pass the password via '--password <pw>' or PDF_PASSWORD env.`);
+      console.error(`  (${e.message})`);
+      process.exit(0);
+    }
+    throw err;
+  }
 
   if (result.warnings.length) {
     console.log('Warnings:');

@@ -2,7 +2,7 @@
 // CLI: extract an ICICI-style bank statement PDF -> CSV + reconciliation report.
 //
 // Usage:
-//   node --experimental-strip-types scripts/pdf-to-csv.ts <input.pdf> [output.csv] [--report report.csv]
+//   node --experimental-strip-types scripts/pdf-to-csv.ts <input.pdf> [output.csv] [--report report.csv] [--password PASSWORD]
 //
 // Exit codes: 0 = balances valid, 1 = balances invalid (check report.csv).
 
@@ -11,13 +11,15 @@ import { resolve } from 'node:path';
 import { extractStatement } from '../src/utils/iciciStatementExtractor.ts';
 import { rowsToCsv, checkBalances, checkReportToCsv } from '../src/utils/csvWriter.ts';
 
-function parseArgs(argv: string[]): { input: string; output: string; report: string } {
+function parseArgs(argv: string[]): { input: string; output: string; report: string; password: string } {
   let input = '';
   let output = '';
   let report = '';
+  let password = process.env.PDF_PASSWORD || '';
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--report' && argv[i + 1]) { report = argv[++i]; continue; }
+    if (a === '--password' && argv[i + 1]) { password = argv[++i]; continue; }
     if (!a.startsWith('--')) {
       if (!input) input = a;
       else if (!output) output = a;
@@ -25,13 +27,13 @@ function parseArgs(argv: string[]): { input: string; output: string; report: str
   }
   if (!output && input) output = input.replace(/\.pdf$/i, '') + '.csv';
   if (!report && output) report = output.replace(/\.csv$/i, '') + '-report.csv';
-  return { input, output, report };
+  return { input, output, report, password };
 }
 
 async function main(): Promise<void> {
-  const { input, output, report } = parseArgs(process.argv.slice(2));
+  const { input, output, report, password } = parseArgs(process.argv.slice(2));
   if (!input) {
-    console.error('Usage: node --experimental-strip-types scripts/pdf-to-csv.ts <input.pdf> [output.csv] [--report report.csv]');
+    console.error('Usage: node --experimental-strip-types scripts/pdf-to-csv.ts <input.pdf> [output.csv] [--report report.csv] [--password PASSWORD]');
     process.exit(2);
   }
   const inputPath = resolve(input);
@@ -43,7 +45,7 @@ async function main(): Promise<void> {
   const buf = readFileSync(inputPath);
   console.log(`Extracting ${inputPath} (${buf.length} bytes)...`);
 
-  const result = await extractStatement(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const result = await extractStatement(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), password || undefined);
 
   if (result.warnings.length) {
     console.warn('Warnings:');
@@ -75,7 +77,13 @@ async function main(): Promise<void> {
   process.exit(check.isValid ? 0 : 1);
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
+  const e = err as { name?: string; code?: number; message?: string };
+  if (e?.name === 'PasswordException') {
+    console.error(`This PDF is password-protected (${e.message}).`);
+    console.error('Pass the password with:   --password <password>   (or set the PDF_PASSWORD env var).');
+    process.exit(2);
+  }
   console.error('Fatal error:', err);
   process.exit(2);
 });
