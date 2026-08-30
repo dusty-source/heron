@@ -963,3 +963,58 @@ export function mergeMultilineRows(table: string[][]): string[][] {
   }
   return mergedTable;
 }
+
+/**
+ * CSV escape function (RFC 4180). Quote-wraps cells containing commas, quotes, or newlines;
+ * doubles embedded quotes. Adds UTF-8 BOM for Excel compatibility.
+ */
+export function csvEscape(value: string): string {
+  const needsQuotes = /[,"\n\r]/.test(value);
+  if (!needsQuotes) return value;
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Serializes a raw table grid (string[][]) to CSV format with UTF-8 BOM.
+ * Useful for diagnostic exports showing exactly what pdf.js extracted.
+ */
+export function gridToCsv(grid: string[][]): string {
+  const bom = '\uFEFF'; // UTF-8 BOM for Excel/Office compatibility
+  const lines = [csvEscape('Columns')].concat(grid.map(row => row.join(',')));
+  return bom + lines.join('\r\n');
+}
+
+/**
+ * Serializes ParseResult metadata to a key/value CSV for diagnostic purposes.
+ */
+export function diagnosticsToCsv(result: ParseResult): string {
+  const bom = '\uFEFF'; // UTF-8 BOM for Excel/Office compatibility
+  const header = 'diagnostic_key,diagnostic_value';
+  
+  const pairs = [
+    ['usedHeaders', String(result.detection?.usedHeaders) ?? 'false'],
+    ['hasBalance', result.balanceCheck ? 'true' : 'false'],
+    ['layoutKey', csvEscape(String(result.detection?.layoutKey) ?? 'none')],
+    ['profile.dateIdx', csvEscape(String(result.detection?.profile.dateIdx) ?? '-')],
+    ['profile.descIdx', csvEscape(String(result.detection?.profile.descIdx) ?? '-')],
+    ['profile.creditIdx', csvEscape(String(result.detection?.profile.creditIdx) ?? '-')],
+    ['profile.debitIdx', csvEscape(String(result.detection?.profile.debitIdx) ?? '-')],
+    ['profile.balanceIdx', csvEscape(String(result.detection?.profile.balanceIdx) ?? '-')],
+    ['profile.refIdx', csvEscape(String(result.detection?.profile.refIdx) ?? '-')],
+    ['diag.fallbackUsed', csvEscape(String(result.detection?.diagnostics?.fallbackUsed) ?? 'none')],
+    ['diag.score', csvEscape(String(result.detection?.diagnostics?.score) ?? '-')],
+    ['diag.reasons', csvEscape(JSON.stringify(result.detection?.diagnostics?.reasons) ?? '[]')],
+    ['txnCount', String(result.txns.length)],
+    ['balanceCheck.opening', csvEscape(String(result.balanceCheck?.openingBalance) ?? '0')],
+    ['balanceCheck.closing', csvEscape(String(result.balanceCheck?.closingBalance) ?? '0')],
+    ['balanceCheck.totalDeposits', csvEscape(String(result.balanceCheck?.totalDeposits) ?? '0')],
+    ['balanceCheck.totalWithdrawals', csvEscape(String(result.balanceCheck?.totalWithdrawals) ?? '0')],
+    ['balanceCheck.expectedClosing', csvEscape(String(result.balanceCheck?.expectedClosing) ?? '0')],
+    ['balanceCheck.difference', csvEscape(String(result.balanceCheck?.difference) ?? '0')],
+    ['balanceCheck.isValid', String(result.balanceCheck?.isValid) ?? 'false'],
+    ['errors.length', String(result.errors.length)],
+  ];
+  
+  const lines = [header].concat(pairs.map(([k, v]) => `${csvEscape(k)},${v}`));
+  return bom + lines.join('\r\n');
+}
