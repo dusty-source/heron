@@ -1336,6 +1336,7 @@ const generateAnnualPDFReport = useCallback((): string => {
   if (!y) return '';
   const fmt = (v: number) => v.toLocaleString('en-IN');
   const sumAll = (arr: DataEntry[]) => arr.reduce((sm, e) => sm + e.values.reduce((a, b) => a + b, 0), 0);
+  const sum = (arr: DataEntry[], m: number) => arr.reduce((sm, e) => sm + (e.values[m] || 0), 0);
   const income = sumAll(y.incomeEntries);
   const household = sumAll(y.householdExpenses);
   const debt = sumAll(y.debtRepayment);
