@@ -2,12 +2,12 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Wallet, TrendingUp, TrendingDown, Home, CreditCard, PiggyBank,
-  BarChart3, ArrowUpRight, ArrowDownRight, Activity, Plus, Trash2,
+  BarChart3, Activity, Plus, Trash2,
   Edit3, Check, RotateCcw, Clock, AlertTriangle, Lock, Settings,
   Shield, Sparkles, ChevronRight, X, Repeat, Target, Swords, AlertOctagon,
   Zap, Users, Download, FileText, FileSpreadsheet, QrCode, ScanLine, Copy,
-  CheckCircle2, Share2, Lightbulb, Filter, SlidersHorizontal,
-  Eye, EyeOff } from 'lucide-react';
+  CheckCircle2, Share2, Lightbulb, Eye, EyeOff
+} from 'lucide-react';
 import {
   AreaChart, Area, XAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie,
   BarChart, Bar, LineChart, Line
@@ -16,8 +16,8 @@ import { useBudgetStore } from './store/useBudgetStore';
 import type { TaxEntry, WindfallResult, InterceptorStatus, NoSpendStatus, SharedExpense, YearData } from './store/useBudgetStore';
 import { formatCurrency, getStatusColor, getRemarkColor, getBurnRingColor, getBurnStatusColor, getTaxCategoryColor } from './data/budgetData';
 import type { BurnRate } from './data/budgetData';
-import { CoachInsight, generateAnnualInsights, defaultCoachSettings } from './coachEngine';
-import { parseCsvStatement, parseStatementLines, extractTextFromPdf, type ParsedTxn, type DateOrder, type ParseResult } from './utils/statementParser';
+import { generateAnnualInsights, defaultCoachSettings } from './coachEngine';
+import { parseCsvStatement, parseStatementLines, extractTextFromPdf, type ParsedTxn, type DateOrder, type ParseResult, gridToCsv, diagnosticsToCsv } from './utils/statementParser';
 
 type Tab = 'overview' | 'details' | 'debt' | 'tax' | 'war' | 'sync' | 'coach';
 type EditSection = 'income' | 'household' | 'debt-repay' | 'savings' | 'debt-prog' | 'tax' | null;
@@ -167,10 +167,7 @@ function EditableRow({
   );
 }
 
-function formatTimestamp(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-}
+
 
 /* ─── Bottom Sheet ────────────────────────────────────────── */
 function BottomSheet({ isOpen, onClose, title, children }: { isOpen: boolean; onClose: () => void; title: string; children: React.ReactNode }) {
@@ -923,7 +920,7 @@ function StatementImportSection({ store, selectedMonth }: {
             </div>
             <div className="space-y-2 flex-1 min-h-0 overflow-y-auto overscroll-contain scroll-touch">
               {rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).length > 0 ? (
-                rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((r, i) => (
+                rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(r => (
                 <div key={r.uid} className={`p-2.5 rounded-xl border ${r.dupe || r.yearMismatch ? 'opacity-50 border-ios-border/10' : 'border-ios-border/20'} bg-ios-surface-2`}>
                   <div className="flex items-center gap-2">
                     <button onClick={() => setRows(rows.map(x => (x.uid === r.uid ? { ...x, selected: !x.selected } : x)))}
@@ -976,6 +973,51 @@ function StatementImportSection({ store, selectedMonth }: {
                 <button disabled={(page + 1) * PAGE_SIZE >= rows.filter(r => filter === 'all' || (filter === 'credit' ? r.txn.direction === 'credit' : r.txn.direction === 'debit')).length} onClick={() => setPage(p => p + 1)} className="px-3 py-1.5 rounded-xl bg-ios-surface-2 text-[11px] font-bold text-ios-text-secondary disabled:opacity-40">Next →</button>
               </div>
             )}
+            {parseResultState && (
+              <div className="flex items-center gap-2 mt-3 border-t border-ios-border/30 pt-3">
+                <motion.button whileTap={{ scale: 0.95 }} onClick={async () => {
+                  const csvGrid = gridToCsv(parseResultState.rawTable || []);
+                  const csvDiag = diagnosticsToCsv(parseResultState);
+                  
+                  // Create two file objects with UTF-8 BOM for Excel compatibility
+                  const blobGrid = new Blob([csvGrid], { type: 'text/csv;charset=utf-8;' });
+                  const blobDiag = new Blob([csvDiag], { type: 'text/csv;charset=utf-8;' });
+                  
+                  // Prefer Web Share API (mobile), fall back to Blob download pattern
+                  if ('share' in navigator && parseResultState.txns.length > 0) {
+                    try {
+                      const shareData = [new File([blobGrid], 'heron-grid.csv', { type: 'text/csv' }),
+                                         new File([blobDiag], 'heron-diagnostic.csv', { type: 'text/csv' })];
+                      await navigator.share({ files: shareData });
+                    } catch (e) {
+                      // Share cancelled or failed - fall through to download fallback
+                    }
+                  }
+                  
+                  // Fallback: auto-download both files (works in dev/standalone browsers)
+                  const urls = [URL.createObjectURL(blobGrid), URL.createObjectURL(blobDiag)];
+                  const names = ['heron-grid.csv', 'heron-diagnostic.csv'];
+                  for (let i = 0; i < names.length; i++) {
+                    const a = document.createElement('a');
+                    a.href = urls[i];
+                    a.download = names[i];
+                    a.style.display = 'none';
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => { document.body.removeChild(a); }, 100);
+                  }
+                  
+                  // Clean up URLs after download completes
+                  if (urls[0]) URL.revokeObjectURL(urls[0]);
+                  if (urls[1]) URL.revokeObjectURL(urls[1]);
+                }}
+                  disabled={!parseResultState.rawTable}
+                  className="px-3 py-1.5 rounded-xl bg-ios-blue/15 text-[11px] font-bold text-ios-blue disabled:bg-gray-200 disabled:text-gray-400">
+                  📋 Export diagnostic CSV
+                </motion.button>
+                <span className="text-[9px] text-gray-400">Exports extracted grid + metadata</span>
+              </div>
+            )}
             <button onClick={handleConfirm} className="w-full mt-3 py-2.5 rounded-xl bg-ios-green/15 text-xs font-bold text-ios-green">
               Confirm selected ({rows.filter(r => r.selected && !r.dupe && !r.yearMismatch && (r.entryId || r.newName.trim())).length})
             </button>
@@ -1011,7 +1053,7 @@ export default function App() {
   const [syncMode, setSyncMode] = useState<'show' | 'scan'>('show');
   const [syncPayload, setSyncPayload] = useState('');
   const [scanInput, setScanInput] = useState('');
-  const [showExportPanel, setShowExportPanel] = useState(false);
+
   const [copied, setCopied] = useState(false);
   const [partnerNameInput, setPartnerNameInput] = useState('');
   const [addSheetOpen, setAddSheetOpen] = useState(false);
@@ -1032,11 +1074,9 @@ export default function App() {
     getIncomeTotal, getOutgoingTotal, getAllocationTotal, getHouseholdTotal, getDebtRepaymentTotal, getSavingsTotal,
     toggleRecurring, applyRecurringAutopilot, getCommittedRecurring, getTrueDisposable,
     addTaxEntry, updateTaxEntryValue, deleteTaxEntry,
-    getTaxShieldStatus, detectWindfall, applyWindfall, setWindfallBaseline,
-    getDisasterStreak, getRecoveryStreak, getInterceptorStatus, getYearComparison,
-    getDebtReductionVelocity, getSavingsAccumulation, enableFamilySync, disableFamilySync,
-    addSharedExpense, updateNoSpendStreak, getNoSpendStatus,
-    generateSyncPayload, applySyncPayload, exportToCSV, exportToJSON, importFromJSON, generatePDFReport, generateAnnualPDFReport, generateCoachInsights, dismissCoachInsight, updateCoachSettings, addDebt, syncDebtEmiToOutflows } = store;
+    getTaxShieldStatus, detectWindfall, applyWindfall, getDisasterStreak, getRecoveryStreak, getInterceptorStatus, getYearComparison,
+    getDebtReductionVelocity, enableFamilySync, disableFamilySync, generateSyncPayload, applySyncPayload, exportToCSV, exportToJSON, importFromJSON,
+    generatePDFReport, generateAnnualPDFReport, generateCoachInsights, dismissCoachInsight, updateCoachSettings, addDebt, updateNoSpendStreak, getNoSpendStatus } = store;
 
   const months = currentYear?.months || [];
   const currentMonth = months[selectedMonth] || '';
@@ -1500,7 +1540,6 @@ export default function App() {
       const y = currentYear;
       if (!y) return null;
       const alloc = y.allocationEntries;
-      const income = getIncomeTotal(selectedMonth);
       const household = getHouseholdTotal(selectedMonth);
       const debt = getDebtRepaymentTotal(selectedMonth);
       const savings = getSavingsTotal(selectedMonth);

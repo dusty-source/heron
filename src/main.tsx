@@ -2,7 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import { StatusBar } from '@capacitor/status-bar'
+import { StatusBar, Style } from '@capacitor/status-bar'
 import { mountViewportReadout } from './utils/viewportDiagnostic'
 
 // Edge-to-edge (overlay the status bar) + light icons over black. This is what
@@ -11,7 +11,7 @@ import { mountViewportReadout } from './utils/viewportDiagnostic'
 try {
   if (StatusBar) {
     StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {})
-    StatusBar.setStyle({ style: 'LIGHT' }).catch(() => {})
+    StatusBar.setStyle({ style: Style.Light }).catch(() => {})
     StatusBar.setBackgroundColor({ color: '#000000' }).catch(() => {})
   }
 } catch {
