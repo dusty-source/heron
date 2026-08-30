@@ -13,7 +13,7 @@ import {
   BarChart, Bar, LineChart, Line
 } from 'recharts';
 import { useBudgetStore } from './store/useBudgetStore';
-import type { TaxEntry, WindfallResult, InterceptorStatus, NoSpendStatus, SharedExpense } from './store/useBudgetStore';
+import type { TaxEntry, WindfallResult, InterceptorStatus, NoSpendStatus, SharedExpense, YearData } from './store/useBudgetStore';
 import { formatCurrency, getStatusColor, getRemarkColor, getBurnRingColor, getBurnStatusColor, getTaxCategoryColor } from './data/budgetData';
 import type { BurnRate } from './data/budgetData';
 import { CoachInsight, generateAnnualInsights, defaultCoachSettings } from './coachEngine';
@@ -686,8 +686,12 @@ function suggestedRowName(desc: string): string {
   return m ? m[0].toUpperCase() : 'IMPORTED';
 }
 
-function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetStore> }) {
-  const { state, currentYear, queueTransactions, confirmImportedTxn, autoAllocate } = store;
+function StatementImportSection({ store, selectedMonth }: { 
+  store: ReturnType<typeof useBudgetStore>; 
+  selectedMonth: number 
+}) {
+  const { state, currentYear, queueTransactions, confirmImportedTxn, autoAllocate, generateCoachInsights } = store;
+  
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -711,7 +715,7 @@ function StatementImportSection({ store }: { store: ReturnType<typeof useBudgetS
     const importedMonths = new Set(currentYear?.importedStatementMonths || []);
     const activeYearNum = parseInt(state.activeYear, 10);
     const seenKeys = new Set<string>();
-    return txns.map(t => {
+    return txns.map((t, i) => {
       const rule = rules.find(r => t.description.toLowerCase().includes(r.match.toLowerCase()));
       const section = rule ? rule.section : t.direction === 'credit' ? 'incomeEntries' : 'householdExpenses';
       let entryId = rule ? rule.entryId : '';
@@ -1870,7 +1874,7 @@ export default function App() {
 
           {activeTab === 'sync' && (
             <motion.div key="sync" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.3 }} className="space-y-3 stagger-children">
-              <StatementImportSection store={store} />
+              <StatementImportSection store={store} selectedMonth={selectedMonth} />
               <NoSpendChallengeCard status={noSpendStatus} onCheckIn={() => { updateNoSpendStreak(); }} />
               {currentYear.familySync.enabled && (
                 <SharedDashboard expenses={currentYear.familySync.sharedExpenses} />
